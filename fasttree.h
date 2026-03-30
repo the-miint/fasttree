@@ -223,6 +223,40 @@ typedef struct {
     char             *_name_buf;
 } fasttree_tree_t;
 
+/* ── SOA tree output (Structure of Arrays) ───────────────────────── */
+
+/*
+ * Alternative layout where each node field is a contiguous array.
+ * Better cache behavior for columnar bulk operations (e.g., rescaling
+ * all branch lengths, filtering by support, extracting all leaf names).
+ *
+ * All arrays are indexed by node ID [0, n_nodes).
+ * Allocated as a single block — free with fasttree_tree_soa_free().
+ *
+ * children_offset[i] is the index into _children_buf where node i's
+ * children start.  Node i has n_children[i] children at
+ *   _children_buf[children_offset[i] .. children_offset[i]+n_children[i]).
+ * Leaf nodes have n_children[i] == 0; children_offset[i] is set to -1.
+ */
+
+typedef struct {
+    int     n_nodes;
+    int     n_leaves;
+    int     root;            /* index into arrays */
+    /* Per-node arrays (length n_nodes) */
+    int    *parent;          /* -1 for root */
+    double *branch_length;
+    double *support;         /* -1 if not computed */
+    int    *n_children;      /* 0=leaf, 2-3=internal, may be >3 with duplicates */
+    int    *is_leaf;         /* nonzero = leaf node */
+    int    *children_offset; /* index into _children_buf */
+    const char **name;       /* leaf name or NULL for internal nodes */
+    /* Backing stores — do not free directly. */
+    int    *_children_buf;
+    char   *_name_buf;
+    void   *_base;           /* single allocation backing all arrays */
+} fasttree_tree_soa_t;
+
 /* ── API functions ───────────────────────────────────────────────── */
 
 /* Fill config with defaults matching standard FastTree behavior.
@@ -256,6 +290,23 @@ FASTTREE_API char           *fasttree_tree_to_newick(const fasttree_tree_t *tree
 
 /* Free a tree returned by fasttree_build. */
 FASTTREE_API void            fasttree_tree_free(fasttree_tree_t *tree);
+
+/* Build a tree with SOA (Structure of Arrays) output layout.
+   Same algorithm as fasttree_build; only the output format differs.
+   The entire SOA tree is a single allocation — free with
+   fasttree_tree_soa_free(). */
+FASTTREE_API int             fasttree_build_soa(fasttree_ctx_t *ctx,
+                                                const char **names, const char **seqs,
+                                                int nSeq, int nPos,
+                                                fasttree_tree_soa_t **tree_out,
+                                                fasttree_stats_t *stats_out);
+
+/* Serialize a SOA tree to Newick format. */
+FASTTREE_API char           *fasttree_tree_soa_to_newick(const fasttree_tree_soa_t *tree,
+                                                          int show_support);
+
+/* Free a SOA tree returned by fasttree_build_soa. */
+FASTTREE_API void            fasttree_tree_soa_free(fasttree_tree_soa_t *tree);
 
 /* Human-readable string for an error code.  Returns "Unknown error" for
    unrecognized codes.  The returned string is a static constant. */

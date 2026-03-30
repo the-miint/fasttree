@@ -105,6 +105,34 @@ gcc -o my_program my_program.c libfasttree.a -lm
 | `fasttree_tree_to_newick(tree, show_support)` | Serialize to Newick string (caller frees with `free()`) |
 | `fasttree_tree_free(tree)` | Free a tree returned by `fasttree_build` |
 
+#### SOA (Structure of Arrays) Output
+
+An alternative tree layout where each node field is a contiguous array. Better cache behavior for columnar bulk operations (rescaling branch lengths, filtering by support).
+
+| Function | Description |
+|----------|-------------|
+| `fasttree_build_soa(ctx, names, seqs, nSeq, nPos, &tree, &stats)` | Build tree with SOA layout (single malloc) |
+| `fasttree_tree_soa_to_newick(tree, show_support)` | Serialize SOA tree to Newick string |
+| `fasttree_tree_soa_free(tree)` | Free a SOA tree |
+
+```c
+fasttree_tree_soa_t *tree = NULL;
+fasttree_build_soa(ctx, names, seqs, nSeq, nPos, &tree, NULL);
+
+/* Columnar access — iterate one field at a time */
+for (int i = 0; i < tree->n_nodes; i++)
+    total += tree->branch_length[i];
+
+/* Children via offset into shared buffer */
+for (int j = 0; j < tree->n_children[i]; j++) {
+    int child = tree->_children_buf[tree->children_offset[i] + j];
+}
+
+fasttree_tree_soa_free(tree);  /* single free */
+```
+
+The entire SOA tree is one allocation — `fasttree_tree_soa_free` releases everything.
+
 #### Error Handling
 
 | Function | Description |

@@ -148,45 +148,45 @@ void fasttree_destroy(fasttree_ctx_t *ctx) {
   free(ctx);
 }
 
-/* ── Build ────────────────────────────────────────────────────────── */
+/* ── Build (shared algorithm core) ────────────────────────────────── */
 
-int fasttree_build(fasttree_ctx_t *ctx,
-                   const char **names, const char **seqs,
-                   int nSeq, int nPos,
-                   fasttree_tree_t **tree_out,
-                   fasttree_stats_t *stats_out) {
-  if (ctx == NULL || names == NULL || seqs == NULL || tree_out == NULL)
-    return FASTTREE_ERR_INVALID_INPUT;
+/* Results from the algorithm, consumed by AOS/SOA extraction */
+typedef struct {
+  NJ_t *NJ;
+  uniquify_t *unique;
+  alignment_t *aln;
+  double final_loglk;
+} build_result_t;
 
-  fasttree_ctx_t *ft_ctx = ctx;  /* alias for FT_ macros */
-  *tree_out = NULL;
-  ft_ctx->error_msg[0] = '\0';  /* clear stale error */
-
-  /* Reset arena for this build (frees any memory from previous build/error).
-     Preserve custom allocator pointers across the reset. */
-  {
-    void *(*saved_alloc)(size_t, void*) = ft_ctx->arena.alloc_fn;
-    void  (*saved_free)(void*, void*)   = ft_ctx->arena.free_fn;
-    void   *saved_ud                    = ft_ctx->arena.alloc_user_data;
-    ft_arena_destroy(&ft_ctx->arena);
-    ft_arena_init(&ft_ctx->arena);
-    ft_ctx->arena.alloc_fn        = saved_alloc;
-    ft_ctx->arena.free_fn         = saved_free;
-    ft_ctx->arena.alloc_user_data = saved_ud;
-  }
-
+/* Run the full NJ→NNI/SPR→ML algorithm. On success, result is filled.
+   On error, longjmps. Caller must extract tree then destroy arena. */
+/* Common setup for both fasttree_build and fasttree_build_soa.
+   Resets arena (preserving custom allocator), clears error state, sets OMP threads.
+   Also serves as the recovery path: if a previous build longjmp'd mid-computation,
+   this destroys the abandoned arena memory on the next call. */
+static void _build_setup(fasttree_ctx_t *ft_ctx) {
+  ft_ctx->error_msg[0] = '\0';
+  ft_ctx->error_code = FASTTREE_OK;
+  void *(*saved_alloc)(size_t, void*) = ft_ctx->arena.alloc_fn;
+  void  (*saved_free)(void*, void*)   = ft_ctx->arena.free_fn;
+  void   *saved_ud                    = ft_ctx->arena.alloc_user_data;
+  ft_arena_destroy(&ft_ctx->arena);
+  ft_arena_init(&ft_ctx->arena);
+  ft_ctx->arena.alloc_fn        = saved_alloc;
+  ft_ctx->arena.free_fn         = saved_free;
+  ft_ctx->arena.alloc_user_data = saved_ud;
 #ifdef OPENMP
-  /* Set thread count per-build, not per-create (avoids global race) */
   if (ft_ctx->n_threads > 0)
     omp_set_num_threads(ft_ctx->n_threads);
 #endif
+}
 
-  /* Set up longjmp error recovery */
-  int err = setjmp(ft_ctx->error_jmp);
-  if (err != 0) {
-    ft_ctx->error_code = err;
-    return err;
-  }
+/* Run the full NJ->NNI/SPR->ML algorithm. On success, result is filled.
+   On error, longjmps. Caller must extract tree then destroy arena. */
+static void _run_algorithm(fasttree_ctx_t *ft_ctx,
+                           const char **names, const char **seqs,
+                           int nSeq, int nPos,
+                           build_result_t *result) {
 
   /* Initialize RNG */
   ran_start(ft_ctx, (long)ft_ctx->seed);
@@ -375,169 +375,346 @@ int fasttree_build(fasttree_ctx_t *ctx,
       ReliabilityNJ(ft_ctx, NJ, nBootstrap);
   }
 
-  /* ── Extract tree into fasttree_tree_t ──
-     Handles duplicate sequences: unique leaves with duplicates get
-     zero-branch-length leaf children, matching PrintNJ behavior. */
-  {
-    int n_unique = NJ->nSeq;  /* unique leaf count in NJ */
-    int root = NJ->root;
+  result->NJ = NJ;
+  result->unique = unique;
+  result->aln = aln;
+  result->final_loglk = final_loglk;
+}
 
-    /* Count duplicate sequences */
-    int n_dup_leaves = 0;
-    for (i = 0; i < n_unique; i++) {
-      int alnIdx = unique->alnNext[unique->uniqueFirst[i]];
-      while (alnIdx >= 0) {
-        n_dup_leaves++;
-        alnIdx = unique->alnNext[alnIdx];
-      }
+/* ── Shared counting helpers for AOS/SOA extraction ────────────── */
+
+static void _count_tree_sizes(NJ_t *NJ, uniquify_t *unique, alignment_t *aln,
+                              int *out_n_nodes, int *out_n_leaves,
+                              int *out_total_children, size_t *out_name_buf_size) {
+  int n_unique = NJ->nSeq;
+  int n_extra_nodes = 0;  /* extra nodes needed for duplicate groups */
+  int n_total_leaves = n_unique;
+  int i;
+  for (i = 0; i < n_unique; i++) {
+    int nDup = 0;
+    int alnIdx = unique->alnNext[unique->uniqueFirst[i]];
+    while (alnIdx >= 0) { nDup++; alnIdx = unique->alnNext[alnIdx]; }
+    if (nDup > 0) {
+      /* Original leaf becomes internal; need nDup+1 new child nodes
+         (one for the original name + nDup for duplicates) */
+      n_extra_nodes += nDup + 1;
+      n_total_leaves += nDup;  /* nDup new leaves (original was already counted) */
     }
+  }
+  *out_n_nodes = NJ->maxnode + n_extra_nodes;
+  *out_n_leaves = n_total_leaves;
 
-    int n_nodes = NJ->maxnode + n_dup_leaves;
-    int n_leaves_total = n_unique + n_dup_leaves;
+  int total_children = 0;
+  for (i = n_unique; i < NJ->maxnode; i++)
+    total_children += NJ->child[i].nChild;
+  for (i = 0; i < n_unique; i++) {
+    int nd = 0;
+    int alnIdx = unique->alnNext[unique->uniqueFirst[i]];
+    while (alnIdx >= 0) { nd++; alnIdx = unique->alnNext[alnIdx]; }
+    if (nd > 0) total_children += nd + 1;
+  }
+  *out_total_children = total_children;
 
-    fasttree_tree_t *tree = (fasttree_tree_t *)malloc(sizeof(fasttree_tree_t));
-    if (!tree) { snprintf(ft_ctx->error_msg, sizeof(ft_ctx->error_msg), "OOM tree"); longjmp(ft_ctx->error_jmp, FASTTREE_ERR_NOMEM); }
+  size_t name_size = 0;
+  for (i = 0; i < n_unique; i++) {
+    int alnIdx = unique->uniqueFirst[i];
+    while (alnIdx >= 0) {
+      name_size += strlen(aln->names[alnIdx]) + 1;
+      alnIdx = unique->alnNext[alnIdx];
+    }
+  }
+  *out_name_buf_size = name_size;
+}
 
-    tree->n_nodes  = n_nodes;
-    tree->n_leaves = n_leaves_total;
-    tree->root     = root;
+/* ── AOS extraction ────────────────────────────────────────────── */
 
-    tree->nodes = (fasttree_node_t *)calloc(n_nodes, sizeof(fasttree_node_t));
-    if (!tree->nodes) { free(tree); longjmp(ft_ctx->error_jmp, FASTTREE_ERR_NOMEM); }
+static fasttree_tree_t *_extract_tree_aos(fasttree_ctx_t *ft_ctx,
+                                          build_result_t *r) {
+  NJ_t *NJ = r->NJ;
+  uniquify_t *unique = r->unique;
+  alignment_t *aln = r->aln;
+  int n_unique = NJ->nSeq;
 
-    /* Count total children (NJ internal + extra children for duplicates) */
-    int total_children = 0;
-    for (i = n_unique; i < NJ->maxnode; i++)
-      total_children += NJ->child[i].nChild;
-    /* Unique leaves with duplicates become internal-like: original + dup children */
-    for (i = 0; i < n_unique; i++) {
+  int n_nodes, n_leaves, total_children;
+  size_t name_buf_size;
+  _count_tree_sizes(NJ, unique, aln, &n_nodes, &n_leaves,
+                    &total_children, &name_buf_size);
+
+  fasttree_tree_t *tree = (fasttree_tree_t *)malloc(sizeof(fasttree_tree_t));
+  if (!tree) { snprintf(ft_ctx->error_msg, sizeof(ft_ctx->error_msg), "OOM"); longjmp(ft_ctx->error_jmp, FASTTREE_ERR_NOMEM); }
+
+  tree->n_nodes  = n_nodes;
+  tree->n_leaves = n_leaves;
+  tree->root     = NJ->root;
+
+  tree->nodes = (fasttree_node_t *)calloc(n_nodes, sizeof(fasttree_node_t));
+  tree->_children_buf = (int *)malloc(sizeof(int) * (total_children > 0 ? total_children : 1));
+  tree->_name_buf = (char *)malloc(name_buf_size > 0 ? name_buf_size : 1);
+  if (!tree->nodes || !tree->_children_buf || !tree->_name_buf) {
+    free(tree->_name_buf); free(tree->_children_buf); free(tree->nodes); free(tree);
+    longjmp(ft_ctx->error_jmp, FASTTREE_ERR_NOMEM);
+  }
+
+  /* Fill nodes */
+  int *child_ptr = tree->_children_buf;
+  char *name_ptr = tree->_name_buf;
+  int next_dup_id = NJ->maxnode;
+  int i;
+
+  for (i = 0; i < NJ->maxnode; i++) {
+    fasttree_node_t *node = &tree->nodes[i];
+    node->id = i;
+    node->parent = NJ->parent[i];
+    node->branch_length = NJ->branchlength[i];
+    node->support = NJ->support[i];
+
+    if (i < n_unique) {
       int nDup = 0;
       int alnIdx = unique->alnNext[unique->uniqueFirst[i]];
       while (alnIdx >= 0) { nDup++; alnIdx = unique->alnNext[alnIdx]; }
-      if (nDup > 0)
-        total_children += nDup + 1; /* original leaf + duplicates */
-    }
-    tree->_children_buf = (int *)malloc(sizeof(int) * (total_children > 0 ? total_children : 1));
-    if (!tree->_children_buf) { free(tree->nodes); free(tree); longjmp(ft_ctx->error_jmp, FASTTREE_ERR_NOMEM); }
 
-    /* Calculate name buffer size for ALL leaves (unique + duplicates) */
-    size_t name_buf_size = 0;
-    for (i = 0; i < n_unique; i++) {
-      int alnIdx = unique->uniqueFirst[i];
-      while (alnIdx >= 0) {
-        name_buf_size += strlen(aln->names[alnIdx]) + 1;
-        alnIdx = unique->alnNext[alnIdx];
-      }
-    }
-    tree->_name_buf = (char *)malloc(name_buf_size > 0 ? name_buf_size : 1);
-    if (!tree->_name_buf) { free(tree->_children_buf); free(tree->nodes); free(tree); longjmp(ft_ctx->error_jmp, FASTTREE_ERR_NOMEM); }
-
-    /* Fill nodes */
-    int *child_ptr = tree->_children_buf;
-    char *name_ptr = tree->_name_buf;
-    int next_dup_id = NJ->maxnode;  /* IDs for duplicate leaf nodes */
-
-    for (i = 0; i < NJ->maxnode; i++) {
-      fasttree_node_t *node = &tree->nodes[i];
-      node->id = i;
-      node->parent = NJ->parent[i];
-      node->branch_length = NJ->branchlength[i];
-      node->support = NJ->support[i];
-
-      if (i < n_unique) {
-        /* Unique leaf — check for duplicates */
-        int nDup = 0;
-        int alnIdx = unique->alnNext[unique->uniqueFirst[i]];
-        while (alnIdx >= 0) { nDup++; alnIdx = unique->alnNext[alnIdx]; }
-
-        if (nDup == 0) {
-          /* Simple leaf, no duplicates */
-          node->is_leaf = 1;
-          node->n_children = 0;
-          node->children = NULL;
-          int origIdx = unique->uniqueFirst[i];
-          const char *origName = aln->names[origIdx];
-          size_t nlen = strlen(origName);
-          memcpy(name_ptr, origName, nlen + 1);
-          node->name = name_ptr;
-          name_ptr += nlen + 1;
-        } else {
-          /* Leaf with duplicates — becomes internal-like with children */
-          node->is_leaf = 0;
-          node->n_children = nDup + 1;
-          node->children = child_ptr;
-          node->name = NULL;
-
-          /* First child: the original leaf (as a new dup node) */
-          int origIdx = unique->uniqueFirst[i];
-          int dupId = next_dup_id++;
-          *child_ptr++ = dupId;
-          fasttree_node_t *dn = &tree->nodes[dupId];
-          dn->id = dupId;
-          dn->parent = i;
-          dn->branch_length = 0.0;
-          dn->support = -1;
-          dn->is_leaf = 1;
-          dn->n_children = 0;
-          dn->children = NULL;
-          const char *origName = aln->names[origIdx];
-          size_t nlen = strlen(origName);
-          memcpy(name_ptr, origName, nlen + 1);
-          dn->name = name_ptr;
-          name_ptr += nlen + 1;
-
-          /* Remaining children: duplicate leaves */
-          alnIdx = unique->alnNext[origIdx];
-          while (alnIdx >= 0) {
-            dupId = next_dup_id++;
-            *child_ptr++ = dupId;
-            dn = &tree->nodes[dupId];
-            dn->id = dupId;
-            dn->parent = i;
-            dn->branch_length = 0.0;
-            dn->support = -1;
-            dn->is_leaf = 1;
-            dn->n_children = 0;
-            dn->children = NULL;
-            const char *dupName = aln->names[alnIdx];
-            nlen = strlen(dupName);
-            memcpy(name_ptr, dupName, nlen + 1);
-            dn->name = name_ptr;
-            name_ptr += nlen + 1;
-            alnIdx = unique->alnNext[alnIdx];
-          }
-        }
+      if (nDup == 0) {
+        node->is_leaf = 1;
+        node->n_children = 0;
+        node->children = NULL;
+        int origIdx = unique->uniqueFirst[i];
+        size_t nlen = strlen(aln->names[origIdx]);
+        memcpy(name_ptr, aln->names[origIdx], nlen + 1);
+        node->name = name_ptr;
+        name_ptr += nlen + 1;
       } else {
-        /* NJ internal node */
         node->is_leaf = 0;
-        node->name = NULL;
-        node->n_children = NJ->child[i].nChild;
+        node->n_children = nDup + 1;
         node->children = child_ptr;
-        int j;
-        for (j = 0; j < NJ->child[i].nChild; j++)
-          *child_ptr++ = NJ->child[i].child[j];
+        node->name = NULL;
+        int origIdx = unique->uniqueFirst[i];
+        /* First child: original leaf */
+        int dupId = next_dup_id++;
+        *child_ptr++ = dupId;
+        fasttree_node_t *dn = &tree->nodes[dupId];
+        dn->id = dupId; dn->parent = i; dn->branch_length = 0.0;
+        dn->support = -1; dn->is_leaf = 1; dn->n_children = 0; dn->children = NULL;
+        size_t nlen = strlen(aln->names[origIdx]);
+        memcpy(name_ptr, aln->names[origIdx], nlen + 1);
+        dn->name = name_ptr; name_ptr += nlen + 1;
+        /* Remaining children: duplicates */
+        alnIdx = unique->alnNext[origIdx];
+        while (alnIdx >= 0) {
+          dupId = next_dup_id++;
+          *child_ptr++ = dupId;
+          dn = &tree->nodes[dupId];
+          dn->id = dupId; dn->parent = i; dn->branch_length = 0.0;
+          dn->support = -1; dn->is_leaf = 1; dn->n_children = 0; dn->children = NULL;
+          nlen = strlen(aln->names[alnIdx]);
+          memcpy(name_ptr, aln->names[alnIdx], nlen + 1);
+          dn->name = name_ptr; name_ptr += nlen + 1;
+          alnIdx = unique->alnNext[alnIdx];
+        }
       }
+    } else {
+      node->is_leaf = 0;
+      node->name = NULL;
+      node->n_children = NJ->child[i].nChild;
+      node->children = child_ptr;
+      int j;
+      for (j = 0; j < NJ->child[i].nChild; j++)
+        *child_ptr++ = NJ->child[i].child[j];
     }
-
-    *tree_out = tree;
   }
+  return tree;
+}
 
-  /* Fill stats (capture values before arena destroy) */
+/* ── SOA extraction (single malloc) ────────────────────────────── */
+
+static fasttree_tree_soa_t *_extract_tree_soa(fasttree_ctx_t *ft_ctx,
+                                               build_result_t *r) {
+  NJ_t *NJ = r->NJ;
+  uniquify_t *unique = r->unique;
+  alignment_t *aln = r->aln;
+  int n_unique = NJ->nSeq;
+
+  int n_nodes, n_leaves, total_children;
+  size_t name_buf_size;
+  _count_tree_sizes(NJ, unique, aln, &n_nodes, &n_leaves,
+                    &total_children, &name_buf_size);
+
+  /* Single allocation for all arrays + backing buffers.
+     All sub-arrays aligned to 16 bytes for safe double/pointer access. */
+#define SOA_ALIGN(x) (((x) + 15) & ~(size_t)15)
+  size_t sz_parent     = SOA_ALIGN(sizeof(int) * n_nodes);
+  size_t sz_brlen      = SOA_ALIGN(sizeof(double) * n_nodes);
+  size_t sz_support    = SOA_ALIGN(sizeof(double) * n_nodes);
+  size_t sz_nchild     = SOA_ALIGN(sizeof(int) * n_nodes);
+  size_t sz_isleaf     = SOA_ALIGN(sizeof(int) * n_nodes);
+  size_t sz_choff      = SOA_ALIGN(sizeof(int) * n_nodes);
+  size_t sz_names      = SOA_ALIGN(sizeof(const char *) * n_nodes);
+  size_t sz_childbuf   = SOA_ALIGN(sizeof(int) * (total_children > 0 ? total_children : 1));
+  size_t sz_namebuf    = (name_buf_size > 0 ? name_buf_size : 1);
+
+  size_t total = sz_parent + sz_brlen + sz_support + sz_nchild +
+                 sz_isleaf + sz_choff + sz_names + sz_childbuf + sz_namebuf;
+#undef SOA_ALIGN
+
+  fasttree_tree_soa_t *tree = (fasttree_tree_soa_t *)malloc(sizeof(fasttree_tree_soa_t));
+  if (!tree) longjmp(ft_ctx->error_jmp, FASTTREE_ERR_NOMEM);
+
+  char *base = (char *)malloc(total);
+  if (!base) { free(tree); longjmp(ft_ctx->error_jmp, FASTTREE_ERR_NOMEM); }
+  memset(base, 0, total);
+
+  tree->_base          = base;
+  tree->n_nodes        = n_nodes;
+  tree->n_leaves       = n_leaves;
+  tree->root           = NJ->root;
+
+  /* Carve out arrays from the single allocation */
+  char *p = base;
+  tree->parent         = (int *)p;          p += sz_parent;
+  tree->branch_length  = (double *)p;       p += sz_brlen;
+  tree->support        = (double *)p;       p += sz_support;
+  tree->n_children     = (int *)p;          p += sz_nchild;
+  tree->is_leaf        = (int *)p;          p += sz_isleaf;
+  tree->children_offset= (int *)p;          p += sz_choff;
+  tree->name           = (const char **)p;  p += sz_names;
+  tree->_children_buf  = (int *)p;          p += sz_childbuf;
+  tree->_name_buf      = (char *)p;
+  /* Note: sz_namebuf is not SOA_ALIGN'd since it's the last sub-array. */
+
+  /* Poison children_offset for leaves — any accidental access is visible */
+  memset(tree->children_offset, 0xFF, sizeof(int) * n_nodes);  /* -1 for all */
+
+  /* Fill arrays */
+  int *child_ptr = tree->_children_buf;
+  char *name_ptr = tree->_name_buf;
+  int child_offset = 0;
+  int next_dup_id = NJ->maxnode;
+  int i;
+
+  for (i = 0; i < NJ->maxnode; i++) {
+    tree->parent[i]        = NJ->parent[i];
+    tree->branch_length[i] = NJ->branchlength[i];
+    tree->support[i]       = NJ->support[i];
+
+    if (i < n_unique) {
+      int nDup = 0;
+      int alnIdx = unique->alnNext[unique->uniqueFirst[i]];
+      while (alnIdx >= 0) { nDup++; alnIdx = unique->alnNext[alnIdx]; }
+
+      if (nDup == 0) {
+        tree->is_leaf[i]    = 1;
+        tree->n_children[i] = 0;
+        int origIdx = unique->uniqueFirst[i];
+        size_t nlen = strlen(aln->names[origIdx]);
+        memcpy(name_ptr, aln->names[origIdx], nlen + 1);
+        tree->name[i] = name_ptr;
+        name_ptr += nlen + 1;
+      } else {
+        tree->is_leaf[i]        = 0;
+        tree->n_children[i]     = nDup + 1;
+        tree->children_offset[i]= child_offset;
+        tree->name[i]           = NULL;
+        int origIdx = unique->uniqueFirst[i];
+        /* First child: original leaf */
+        int dupId = next_dup_id++;
+        child_ptr[child_offset++] = dupId;
+        tree->parent[dupId] = i; tree->branch_length[dupId] = 0.0;
+        tree->support[dupId] = -1; tree->is_leaf[dupId] = 1;
+        tree->n_children[dupId] = 0;
+        size_t nlen = strlen(aln->names[origIdx]);
+        memcpy(name_ptr, aln->names[origIdx], nlen + 1);
+        tree->name[dupId] = name_ptr; name_ptr += nlen + 1;
+        /* Remaining children: duplicates */
+        alnIdx = unique->alnNext[origIdx];
+        while (alnIdx >= 0) {
+          dupId = next_dup_id++;
+          child_ptr[child_offset++] = dupId;
+          tree->parent[dupId] = i; tree->branch_length[dupId] = 0.0;
+          tree->support[dupId] = -1; tree->is_leaf[dupId] = 1;
+          tree->n_children[dupId] = 0;
+          nlen = strlen(aln->names[alnIdx]);
+          memcpy(name_ptr, aln->names[alnIdx], nlen + 1);
+          tree->name[dupId] = name_ptr; name_ptr += nlen + 1;
+          alnIdx = unique->alnNext[alnIdx];
+        }
+      }
+    } else {
+      tree->is_leaf[i]         = 0;
+      tree->name[i]            = NULL;
+      tree->n_children[i]      = NJ->child[i].nChild;
+      tree->children_offset[i] = child_offset;
+      int j;
+      for (j = 0; j < NJ->child[i].nChild; j++)
+        child_ptr[child_offset++] = NJ->child[i].child[j];
+    }
+  }
+  return tree;
+}
+
+/* ── Shared post-algorithm: fill stats + destroy arena ────────────── */
+
+static void _fill_stats_and_cleanup(fasttree_ctx_t *ft_ctx,
+                                    build_result_t *r,
+                                    fasttree_stats_t *stats_out) {
   if (stats_out) {
-    stats_out->n_unique_seqs  = unique->nUnique;
-    stats_out->log_likelihood = final_loglk;
+    stats_out->n_unique_seqs  = r->unique->nUnique;
+    stats_out->log_likelihood = r->final_loglk;
     stats_out->gamma_log_lk   = -1.0;
     stats_out->n_nni          = FT_nNNI;
     stats_out->n_spr          = FT_nSPR;
     stats_out->n_ml_nni       = FT_nML_NNI;
   }
-
   /* Destroy arena — reclaims all computation memory in one call.
-     The output tree uses system malloc so it survives this.
-     Individual FreeNJ/FreeUniquify/etc. calls are unnecessary since
-     the arena owns all that memory. */
+     Output trees use system malloc so they survive this. */
   ft_arena_destroy(&ft_ctx->arena);
+}
 
+/* ── fasttree_build (AOS output) ─────────────────────────────────── */
+
+int fasttree_build(fasttree_ctx_t *ctx,
+                   const char **names, const char **seqs,
+                   int nSeq, int nPos,
+                   fasttree_tree_t **tree_out,
+                   fasttree_stats_t *stats_out) {
+  if (ctx == NULL || names == NULL || seqs == NULL || tree_out == NULL)
+    return FASTTREE_ERR_INVALID_INPUT;
+
+  fasttree_ctx_t *ft_ctx = ctx;
+  *tree_out = NULL;
+  _build_setup(ft_ctx);
+
+  volatile int err = setjmp(ft_ctx->error_jmp);
+  if (err != 0) { ft_ctx->error_code = err; return err; }
+
+  build_result_t result;
+  _run_algorithm(ft_ctx, names, seqs, nSeq, nPos, &result);
+
+  *tree_out = _extract_tree_aos(ft_ctx, &result);
+  _fill_stats_and_cleanup(ft_ctx, &result, stats_out);
+  return FASTTREE_OK;
+}
+
+/* ── fasttree_build_soa (SOA output) ─────────────────────────────── */
+
+int fasttree_build_soa(fasttree_ctx_t *ctx,
+                       const char **names, const char **seqs,
+                       int nSeq, int nPos,
+                       fasttree_tree_soa_t **tree_out,
+                       fasttree_stats_t *stats_out) {
+  if (ctx == NULL || names == NULL || seqs == NULL || tree_out == NULL)
+    return FASTTREE_ERR_INVALID_INPUT;
+
+  fasttree_ctx_t *ft_ctx = ctx;
+  *tree_out = NULL;
+  _build_setup(ft_ctx);
+
+  volatile int err = setjmp(ft_ctx->error_jmp);
+  if (err != 0) { ft_ctx->error_code = err; return err; }
+
+  build_result_t result;
+  _run_algorithm(ft_ctx, names, seqs, nSeq, nPos, &result);
+
+  *tree_out = _extract_tree_soa(ft_ctx, &result);
+  _fill_stats_and_cleanup(ft_ctx, &result, stats_out);
   return FASTTREE_OK;
 }
 
@@ -563,6 +740,8 @@ static void _newick_recurse(const fasttree_tree_t *tree, int node_id,
   if (!_newick_ensure(buf, len, cap, 256)) return;
 
   if (node->is_leaf) {
+    size_t nmlen = node->name ? strlen(node->name) : 0;
+    if (!_newick_ensure(buf, len, cap, nmlen + 1)) return;
     *len += snprintf(*buf + *len, *cap - *len, "%s", node->name ? node->name : "");
   } else {
     *len += snprintf(*buf + *len, *cap - *len, "(");
@@ -624,6 +803,79 @@ void fasttree_tree_free(fasttree_tree_t *tree) {
   free(tree->_children_buf);
   free(tree->_name_buf);
   free(tree->nodes);
+  free(tree);
+}
+
+/* ── SOA tree to Newick ───────────────────────────────────────────── */
+
+static void _newick_recurse_soa(const fasttree_tree_soa_t *tree, int node_id,
+                                int show_support, char **buf, size_t *len, size_t *cap) {
+  if (!*buf) return;
+
+  if (!_newick_ensure(buf, len, cap, 256)) return;
+
+  if (tree->is_leaf[node_id]) {
+    const char *nm = tree->name[node_id];
+    size_t nmlen = nm ? strlen(nm) : 0;
+    if (!_newick_ensure(buf, len, cap, nmlen + 1)) return;
+    *len += snprintf(*buf + *len, *cap - *len, "%s", nm ? nm : "");
+  } else {
+    *len += snprintf(*buf + *len, *cap - *len, "(");
+    int off = tree->children_offset[node_id];
+    int nc  = tree->n_children[node_id];
+    int j;
+    for (j = 0; j < nc; j++) {
+      if (!*buf) return;
+      if (j > 0) {
+        if (!_newick_ensure(buf, len, cap, 1)) return;
+        (*buf)[(*len)++] = ',';
+      }
+      _newick_recurse_soa(tree, tree->_children_buf[off + j], show_support, buf, len, cap);
+    }
+    if (!*buf) return;
+    if (!_newick_ensure(buf, len, cap, 256)) return;
+    *len += snprintf(*buf + *len, *cap - *len, ")");
+    if (show_support && tree->parent[node_id] >= 0 && tree->support[node_id] >= 0)
+      *len += snprintf(*buf + *len, *cap - *len, "%.3f", tree->support[node_id]);
+  }
+
+  if (tree->parent[node_id] >= 0) {
+    if (!_newick_ensure(buf, len, cap, 64)) return;
+#ifdef USE_DOUBLE
+    *len += snprintf(*buf + *len, *cap - *len, ":%.9f", tree->branch_length[node_id]);
+#else
+    *len += snprintf(*buf + *len, *cap - *len, ":%.5f", tree->branch_length[node_id]);
+#endif
+  }
+}
+
+char *fasttree_tree_soa_to_newick(const fasttree_tree_soa_t *tree, int show_support) {
+  if (tree == NULL) return NULL;
+
+  size_t cap = 4096;
+  size_t len = 0;
+  char *buf = (char *)malloc(cap);
+  if (!buf) return NULL;
+
+  _newick_recurse_soa(tree, tree->root, show_support, &buf, &len, &cap);
+  if (!buf) return NULL;
+
+  if (len + 3 > cap) {
+    cap = len + 3;
+    buf = (char *)realloc(buf, cap);
+    if (!buf) return NULL;
+  }
+  buf[len++] = ';';
+  buf[len++] = '\n';
+  buf[len] = '\0';
+  return buf;
+}
+
+/* ── SOA tree free ────────────────────────────────────────────────── */
+
+void fasttree_tree_soa_free(fasttree_tree_soa_t *tree) {
+  if (tree == NULL) return;
+  free(tree->_base);  /* single allocation for all arrays */
   free(tree);
 }
 

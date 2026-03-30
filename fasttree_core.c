@@ -8491,6 +8491,9 @@ void ft_arena_init(ft_arena_t *arena) {
   arena->alloc_fn = NULL;
   arena->free_fn = NULL;
   arena->alloc_user_data = NULL;
+#ifdef OPENMP
+  omp_init_lock(&arena->lock);
+#endif
 }
 
 static ft_arena_block_t *ft_arena_new_block(ft_arena_t *arena, size_t data_size) {
@@ -8507,27 +8510,38 @@ static ft_arena_block_t *ft_arena_new_block(ft_arena_t *arena, size_t data_size)
 void *ft_arena_alloc(ft_arena_t *arena, size_t size) {
   if (size == 0) return NULL;
   size_t aligned = ARENA_ALIGN_UP(size);
+  void *p = NULL;
+
+#ifdef OPENMP
+  omp_set_lock(&arena->lock);
+#endif
 
   /* Try current head block */
   if (arena->head != NULL && arena->head->used + aligned <= arena->head->size) {
-    void *p = arena->head->data + arena->head->used;
+    p = arena->head->data + arena->head->used;
     arena->head->used += aligned;
-    return p;
+  } else {
+    /* Need a new block. Oversized allocations get their own block. */
+    size_t block_data_size = aligned > arena->block_size ? aligned : arena->block_size;
+    ft_arena_block_t *b = ft_arena_new_block(arena, block_data_size);
+    if (b != NULL) {
+      b->next = arena->head;
+      arena->head = b;
+      p = b->data;
+      b->used = aligned;
+    }
   }
 
-  /* Need a new block. Oversized allocations get their own block. */
-  size_t block_data_size = aligned > arena->block_size ? aligned : arena->block_size;
-  ft_arena_block_t *b = ft_arena_new_block(arena, block_data_size);
-  if (b == NULL) return NULL;
-
-  b->next = arena->head;
-  arena->head = b;
-  void *p = b->data;
-  b->used = aligned;
+#ifdef OPENMP
+  omp_unset_lock(&arena->lock);
+#endif
   return p;
 }
 
 void ft_arena_destroy(ft_arena_t *arena) {
+#ifdef OPENMP
+  omp_destroy_lock(&arena->lock);
+#endif
   ft_arena_block_t *b = arena->head;
   while (b != NULL) {
     ft_arena_block_t *next = b->next;

@@ -52,16 +52,17 @@ FastTree: fasttree_core.c fasttree_api.o $(HEADERS)
 test_api: test_api.c libfasttree.a
 	$(CC) $(CFLAGS) -o $@ $< libfasttree.a $(LDFLAGS)
 
-# Ground truth test
-test: FastTree FastTree.orig
-	@echo "=== Ground truth tests ==="
+# Ground truth tests use FastTree.orig (always non-OMP) because
+# -DOPENMP changes algorithmic behavior (disables star topology test).
+test: FastTree.orig
+	@echo "=== Ground truth tests (vs saved reference) ==="
 	@for f in 16S.1 16S.2; do \
-	  ./FastTree -seed 12345 -nt < testdata/16S500/$$f.p 2>/dev/null | \
+	  ./FastTree.orig -seed 12345 -nt < testdata/16S500/$$f.p 2>/dev/null | \
 	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
 	    echo "PASS: $$f" || echo "FAIL: $$f"; \
 	done
 	@for f in COG6 COG9; do \
-	  ./FastTree -seed 12345 < testdata/BigCOGs/$$f.500.p 2>/dev/null | \
+	  ./FastTree.orig -seed 12345 < testdata/BigCOGs/$$f.500.p 2>/dev/null | \
 	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
 	    echo "PASS: $$f" || echo "FAIL: $$f"; \
 	done

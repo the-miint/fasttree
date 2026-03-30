@@ -314,6 +314,9 @@ typedef struct {
   void *(*alloc_fn)(size_t size, void *user_data);
   void  (*free_fn)(void *ptr, void *user_data);
   void  *alloc_user_data;
+#ifdef OPENMP
+  omp_lock_t lock;
+#endif
 } ft_arena_t;
 
 _Static_assert(sizeof(ft_arena_block_t) % 16 == 0,
