@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feature/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        omp: ['', 'OMP=1']
+        include:
+          - compiler: gcc
+            cc: gcc
+          - compiler: clang
+            cc: clang
+
+    name: ${{ matrix.compiler }}${{ matrix.omp && ' +OMP' || '' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract test data
+        run: |
+          mkdir -p testdata/16S500 testdata/BigCOGs
+          tar xzf 16S_500.tar.gz -C testdata/16S500/ 2>/dev/null || true
+          tar xzf COG_500.tar.gz -C testdata/BigCOGs/ 2>/dev/null || true
+
+      - name: Build
+        run: make all CC=${{ matrix.cc }} ${{ matrix.omp }}
+
+      - name: Build test_api
+        run: make test_api CC=${{ matrix.cc }} ${{ matrix.omp }}
+
+      - name: Run API smoke tests
+        run: ./test_api
+
+      - name: Run ground truth tests
+        run: make test
+
+      - name: Build original (sanity check)
+        run: make FastTree.orig CC=${{ matrix.cc }}
