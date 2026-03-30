@@ -46,10 +46,10 @@ extern "C" {
 
 /* ── Version ─────────────────────────────────────────────────────── */
 
-#define FASTTREE_VERSION_MAJOR  3
-#define FASTTREE_VERSION_MINOR  0
+#define FASTTREE_VERSION_MAJOR  2
+#define FASTTREE_VERSION_MINOR  3
 #define FASTTREE_VERSION_PATCH  0
-#define FASTTREE_VERSION_STRING "3.0.0"
+#define FASTTREE_VERSION_STRING "2.3.0"
 
 /* ── Error codes ─────────────────────────────────────────────────── */
 

@@ -190,7 +190,7 @@ int my_progress(const char *stage, double frac_done, void *user_data) {
 config.progress_callback = my_progress;
 ```
 
-### Known Limitations (v3.0)
+### Known Limitations (v2.3)
 
 - `FASTTREE_SEQ_AUTO` defaults to protein; auto-detection not yet implemented
 - `config.start_newick` not yet supported (rejected at create time; use CLI `-intree` instead)
