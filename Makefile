@@ -48,9 +48,9 @@ libfasttree.so: fasttree_core.pic.o fasttree_api.pic.o
 FastTree: fasttree_core.c fasttree_api.o $(HEADERS)
 	$(CC) $(CFLAGS) -o $@ fasttree_core.c fasttree_api.o $(LDFLAGS)
 
-# API test
+# API test (link statically to avoid LD_LIBRARY_PATH)
 test_api: test_api.c libfasttree.a
-	$(CC) $(CFLAGS) -o $@ $< -L. -lfasttree $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $< libfasttree.a $(LDFLAGS)
 
 # Ground truth test
 test: FastTree FastTree.orig

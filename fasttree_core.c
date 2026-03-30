@@ -590,6 +590,9 @@ void fasttree_ctx_init(fasttree_ctx_t *c) {
   c->ran_arr_dummy = -1;
   c->ran_arr_started = -1;
   c->ran_arr_ptr = &c->ran_arr_dummy;
+
+  /* Arena allocator */
+  ft_arena_init(&c->arena);
 }
 
 distance_matrix_t *ReadDistanceMatrix(fasttree_ctx_t *ft_ctx, char *prefix);
@@ -2155,6 +2158,7 @@ int main(int argc, char **argv) {
   if (fpLog != NULL)
     fclose(fpLog);
   if (fpOut != stdout) fclose(fpOut);
+  ft_arena_destroy(&ft_ctx->arena);
   exit(0);
 }
 #endif /* FASTTREE_NO_MAIN */
@@ -8128,7 +8132,7 @@ void ResetTopVisible(fasttree_ctx_t *ft_ctx, /*IN/UPDATE*/NJ_t *NJ,
      Note that visible(i) -> j does not necessarily imply visible(j) -> i,
      so we store what the pairing was (or -1 for not used yet)
    */
-  int *inTopVisible = malloc(sizeof(int) * NJ->maxnodes);
+  int *inTopVisible = mymalloc(ft_ctx, sizeof(int) * NJ->maxnodes);
   int i;
   for (i = 0; i < NJ->maxnodes; i++)
     inTopVisible[i] = -1;
@@ -8462,9 +8466,88 @@ double pnorm(double x)
 	   ( t *( t * ( t * ( t * b5 + b4 ) + b3 ) + b2 ) + b1 ));
 }
 
+/* ── Arena allocator implementation ─────────────────────────────── */
+
+#define ARENA_ALIGN 16
+#define ARENA_ALIGN_UP(x) (((x) + (ARENA_ALIGN - 1)) & ~(size_t)(ARENA_ALIGN - 1))
+
+/* Helpers that call the custom allocator or fall back to system malloc/free */
+static void *arena_raw_alloc(ft_arena_t *arena, size_t size) {
+  if (arena->alloc_fn)
+    return arena->alloc_fn(size, arena->alloc_user_data);
+  return malloc(size);
+}
+
+static void arena_raw_free(ft_arena_t *arena, void *ptr) {
+  if (arena->free_fn)
+    arena->free_fn(ptr, arena->alloc_user_data);
+  else
+    free(ptr);
+}
+
+void ft_arena_init(ft_arena_t *arena) {
+  arena->head = NULL;
+  arena->block_size = FT_ARENA_DEFAULT_BLOCK_SIZE;
+  arena->alloc_fn = NULL;
+  arena->free_fn = NULL;
+  arena->alloc_user_data = NULL;
+}
+
+static ft_arena_block_t *ft_arena_new_block(ft_arena_t *arena, size_t data_size) {
+  ft_arena_block_t *b = (ft_arena_block_t *)arena_raw_alloc(arena,
+      sizeof(ft_arena_block_t) + data_size);
+  if (b == NULL) return NULL;
+  assert(((uintptr_t)b % ARENA_ALIGN) == 0);  /* allocator must return aligned memory */
+  b->next = NULL;
+  b->size = data_size;
+  b->used = 0;
+  return b;
+}
+
+void *ft_arena_alloc(ft_arena_t *arena, size_t size) {
+  if (size == 0) return NULL;
+  size_t aligned = ARENA_ALIGN_UP(size);
+
+  /* Try current head block */
+  if (arena->head != NULL && arena->head->used + aligned <= arena->head->size) {
+    void *p = arena->head->data + arena->head->used;
+    arena->head->used += aligned;
+    return p;
+  }
+
+  /* Need a new block. Oversized allocations get their own block. */
+  size_t block_data_size = aligned > arena->block_size ? aligned : arena->block_size;
+  ft_arena_block_t *b = ft_arena_new_block(arena, block_data_size);
+  if (b == NULL) return NULL;
+
+  b->next = arena->head;
+  arena->head = b;
+  void *p = b->data;
+  b->used = aligned;
+  return p;
+}
+
+void ft_arena_destroy(ft_arena_t *arena) {
+  ft_arena_block_t *b = arena->head;
+  while (b != NULL) {
+    ft_arena_block_t *next = b->next;
+    arena_raw_free(arena, b);
+    b = next;
+  }
+  arena->head = NULL;
+  arena->block_size = FT_ARENA_DEFAULT_BLOCK_SIZE;
+}
+
+/* ── mymalloc/myfree/myrealloc — arena-backed ─────────────────────
+   All computation memory goes through the arena. On longjmp error,
+   ft_arena_destroy reclaims everything in one call.
+   myfree is a logical no-op (arena doesn't support individual frees).
+   myrealloc always allocates new + copies; old memory is reclaimed
+   when the arena is destroyed. */
+
 void *mymalloc(fasttree_ctx_t *ft_ctx, size_t sz) {
   if (sz == 0) return(NULL);
-  void *new = malloc(sz);
+  void *new = ft_arena_alloc(&ft_ctx->arena, sz);
   if (new == NULL) {
     snprintf(ft_ctx->error_msg, sizeof(ft_ctx->error_msg),
              "Out of memory allocating %zu bytes", sz);
@@ -8472,12 +8555,6 @@ void *mymalloc(fasttree_ctx_t *ft_ctx, size_t sz) {
   }
   FT_szAllAlloc += sz;
   FT_mymallocUsed += sz;
-#ifdef TRACK_MEMORY
-  struct mallinfo mi = mallinfo();
-  if (mi.arena+mi.hblkhd > FT_maxmallocHeap)
-    FT_maxmallocHeap = mi.arena+mi.hblkhd;
-#endif
-  /* gcc malloc should always return 16-byte-aligned values... */
   assert(IS_ALIGNED(new));
   return (new);
 }
@@ -8500,38 +8577,22 @@ void *myrealloc(fasttree_ctx_t *ft_ctx, void *data, size_t szOld, size_t szNew, 
   }
   if (szOld == szNew)
     return(data);
-  void *new = NULL;
+  /* Arena doesn't support in-place realloc. Always alloc new + copy. */
+  void *new = mymalloc(ft_ctx, szNew);
   if (bCopy) {
-    /* Try to reduce memory fragmentation by allocating anew and copying.
-       Seems to help in practice.
-       Copy min(szOld,szNew) to avoid reading past the source allocation. */
     size_t szCopy = szOld < szNew ? szOld : szNew;
-    new = mymalloc(ft_ctx, szNew);
     memcpy(new, data, szCopy);
-    myfree(ft_ctx, data, szOld);
-  } else {
-    new = realloc(data,szNew);
-    if (new == NULL) {
-      snprintf(ft_ctx->error_msg, sizeof(ft_ctx->error_msg),
-               "Out of memory reallocating %zu bytes", szNew);
-      longjmp(ft_ctx->error_jmp, FASTTREE_ERR_NOMEM);
-    }
-    assert(IS_ALIGNED(new));
-    FT_szAllAlloc += (szNew-szOld);
-    FT_mymallocUsed += (szNew-szOld);
-#ifdef TRACK_MEMORY
-    struct mallinfo mi = mallinfo();
-    if (mi.arena+mi.hblkhd > FT_maxmallocHeap)
-      FT_maxmallocHeap = mi.arena+mi.hblkhd;
-#endif
   }
+  /* Old memory is not freed — arena reclaims it all at destroy time.
+     mymalloc already incremented szAllAlloc/mymallocUsed for the new block. */
   return(new);
 }
 
 void *myfree(fasttree_ctx_t *ft_ctx, void *p, size_t sz) {
+  (void)ft_ctx; (void)sz;
   if(p==NULL) return(NULL);
-  free(p);
-  FT_mymallocUsed -= sz;
+  /* Arena doesn't support individual frees. Memory is reclaimed
+     by ft_arena_destroy when the context is destroyed or reset. */
   return(NULL);
 }
 

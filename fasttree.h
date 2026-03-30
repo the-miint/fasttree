@@ -161,6 +161,16 @@ typedef struct {
     /* Log callback.  Receives verbose/debug messages (may be multi-line). */
     void (*log_callback)(const char *msg, void *user_data);
     void  *log_user_data;
+
+    /* Custom allocator (optional).
+       If alloc_fn is non-NULL, the library uses it instead of malloc/free
+       for all internal computation memory.  The tree output struct returned
+       by fasttree_build is always allocated with system malloc.
+       alloc_fn must return 16-byte-aligned memory or NULL on failure.
+       free_fn must accept pointers returned by alloc_fn. */
+    void *(*alloc_fn)(size_t size, void *user_data);
+    void  (*free_fn)(void *ptr, void *user_data);
+    void  *alloc_user_data;
 } fasttree_config_t;
 
 /* ── Build statistics ────────────────────────────────────────────── */

@@ -57,6 +57,10 @@ void fasttree_config_init(fasttree_config_t *config) {
   config->progress_user_data = NULL;
   config->log_callback       = NULL;
   config->log_user_data      = NULL;
+
+  config->alloc_fn        = NULL;  /* NULL = use system malloc/free */
+  config->free_fn         = NULL;
+  config->alloc_user_data = NULL;
 }
 
 /* ── Context lifecycle ────────────────────────────────────────────── */
@@ -127,17 +131,20 @@ fasttree_ctx_t *fasttree_create(const fasttree_config_t *config) {
   for (i = 0; i < 6; i++) ctx->gtr_rates[i] = config->gtr_rates[i];
   for (i = 0; i < 4; i++) ctx->gtr_freq[i]  = config->gtr_freq[i];
 
+  /* Custom allocator — wire into the arena */
+  if (config->alloc_fn) {
+    ctx->arena.alloc_fn       = config->alloc_fn;
+    ctx->arena.free_fn        = config->free_fn;
+    ctx->arena.alloc_user_data = config->alloc_user_data;
+  }
+
   return ctx;
 }
 
 void fasttree_destroy(fasttree_ctx_t *ctx) {
   if (ctx == NULL) return;
+  ft_arena_destroy(&ctx->arena);
   if (ctx->start_newick) free((void *)ctx->start_newick);
-  /* Note: mymalloc currently uses system malloc, not the arena.
-     On longjmp error paths, in-flight NJ allocations are leaked.
-     When the arena is wired into mymalloc (future), ft_arena_destroy
-     will reclaim all computation memory in one call. For now, error
-     paths leak; the caller should destroy and recreate the context. */
   free(ctx);
 }
 
@@ -154,6 +161,19 @@ int fasttree_build(fasttree_ctx_t *ctx,
   fasttree_ctx_t *ft_ctx = ctx;  /* alias for FT_ macros */
   *tree_out = NULL;
   ft_ctx->error_msg[0] = '\0';  /* clear stale error */
+
+  /* Reset arena for this build (frees any memory from previous build/error).
+     Preserve custom allocator pointers across the reset. */
+  {
+    void *(*saved_alloc)(size_t, void*) = ft_ctx->arena.alloc_fn;
+    void  (*saved_free)(void*, void*)   = ft_ctx->arena.free_fn;
+    void   *saved_ud                    = ft_ctx->arena.alloc_user_data;
+    ft_arena_destroy(&ft_ctx->arena);
+    ft_arena_init(&ft_ctx->arena);
+    ft_ctx->arena.alloc_fn        = saved_alloc;
+    ft_ctx->arena.free_fn         = saved_free;
+    ft_ctx->arena.alloc_user_data = saved_ud;
+  }
 
 #ifdef OPENMP
   /* Set thread count per-build, not per-create (avoids global race) */
@@ -502,7 +522,7 @@ int fasttree_build(fasttree_ctx_t *ctx,
     *tree_out = tree;
   }
 
-  /* Fill stats */
+  /* Fill stats (capture values before arena destroy) */
   if (stats_out) {
     stats_out->n_unique_seqs  = unique->nUnique;
     stats_out->log_likelihood = final_loglk;
@@ -512,11 +532,11 @@ int fasttree_build(fasttree_ctx_t *ctx,
     stats_out->n_ml_nni       = FT_nML_NNI;
   }
 
-  /* Cleanup */
-  NJ = FreeNJ(ft_ctx, NJ);
-  unique = FreeUniquify(ft_ctx, unique);
-  hashnames = FreeHashtable(ft_ctx, hashnames);
-  aln = FreeAlignment(ft_ctx, aln);
+  /* Destroy arena — reclaims all computation memory in one call.
+     The output tree uses system malloc so it survives this.
+     Individual FreeNJ/FreeUniquify/etc. calls are unnecessary since
+     the arena owns all that memory. */
+  ft_arena_destroy(&ft_ctx->arena);
 
   return FASTTREE_OK;
 }

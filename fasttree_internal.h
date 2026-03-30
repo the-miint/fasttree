@@ -298,9 +298,9 @@ typedef struct {
 
 typedef struct ft_arena_block {
   struct ft_arena_block *next;
-  size_t size;
-  size_t used;
-  /* data follows (flexible array member) */
+  size_t size;       /* usable bytes in data[] */
+  size_t used;       /* bytes consumed so far */
+  size_t _pad;       /* pad header to 32 bytes for 16-byte-aligned data[] */
   char data[];
 } ft_arena_block_t;
 
@@ -310,11 +310,17 @@ typedef struct {
   /* Oversized allocations (> block_size) get their own block at the
      head of the same linked list.  No separate tracking needed since
      ft_arena_destroy walks the entire list. */
+  /* Custom allocator (NULL = use system malloc/free) */
+  void *(*alloc_fn)(size_t size, void *user_data);
+  void  (*free_fn)(void *ptr, void *user_data);
+  void  *alloc_user_data;
 } ft_arena_t;
+
+_Static_assert(sizeof(ft_arena_block_t) % 16 == 0,
+               "ft_arena_block_t header must be a multiple of 16 for aligned data[]");
 
 void  ft_arena_init(ft_arena_t *arena);
 void *ft_arena_alloc(ft_arena_t *arena, size_t size);
-void *ft_arena_realloc(ft_arena_t *arena, void *ptr, size_t old_size, size_t new_size);
 void  ft_arena_destroy(ft_arena_t *arena);
 
 /* ── Context struct ──────────────────────────────────────────────── */
