@@ -144,6 +144,9 @@ fasttree_ctx_t *fasttree_create(const fasttree_config_t *config) {
 void fasttree_destroy(fasttree_ctx_t *ctx) {
   if (ctx == NULL) return;
   ft_arena_destroy(&ctx->arena);
+#ifdef OPENMP
+  omp_destroy_lock(&ctx->arena.lock);
+#endif
   if (ctx->start_newick) free((void *)ctx->start_newick);
   free(ctx);
 }

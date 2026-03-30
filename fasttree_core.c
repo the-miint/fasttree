@@ -593,6 +593,9 @@ void fasttree_ctx_init(fasttree_ctx_t *c) {
 
   /* Arena allocator */
   ft_arena_init(&c->arena);
+#ifdef OPENMP
+  omp_init_lock(&c->arena.lock);
+#endif
 }
 
 distance_matrix_t *ReadDistanceMatrix(fasttree_ctx_t *ft_ctx, char *prefix);
@@ -2159,6 +2162,9 @@ int main(int argc, char **argv) {
     fclose(fpLog);
   if (fpOut != stdout) fclose(fpOut);
   ft_arena_destroy(&ft_ctx->arena);
+#ifdef OPENMP
+  omp_destroy_lock(&ft_ctx->arena.lock);
+#endif
   exit(0);
 }
 #endif /* FASTTREE_NO_MAIN */
@@ -8491,9 +8497,8 @@ void ft_arena_init(ft_arena_t *arena) {
   arena->alloc_fn = NULL;
   arena->free_fn = NULL;
   arena->alloc_user_data = NULL;
-#ifdef OPENMP
-  omp_init_lock(&arena->lock);
-#endif
+  /* OMP lock is initialized once in fasttree_ctx_init, not here,
+     because ft_arena_init is called repeatedly to reset the arena. */
 }
 
 static ft_arena_block_t *ft_arena_new_block(ft_arena_t *arena, size_t data_size) {
@@ -8539,9 +8544,6 @@ void *ft_arena_alloc(ft_arena_t *arena, size_t size) {
 }
 
 void ft_arena_destroy(ft_arena_t *arena) {
-#ifdef OPENMP
-  omp_destroy_lock(&arena->lock);
-#endif
   ft_arena_block_t *b = arena->head;
   while (b != NULL) {
     ft_arena_block_t *next = b->next;
@@ -8550,6 +8552,9 @@ void ft_arena_destroy(ft_arena_t *arena) {
   }
   arena->head = NULL;
   arena->block_size = FT_ARENA_DEFAULT_BLOCK_SIZE;
+  /* Note: OMP lock lifecycle is managed by ft_arena_init/fasttree_destroy,
+     not here, because ft_arena_destroy+ft_arena_init is called as a pair
+     to reset the arena between builds. The lock stays valid across resets. */
 }
 
 /* ── mymalloc/myfree/myrealloc — arena-backed ─────────────────────
