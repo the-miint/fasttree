@@ -25,6 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install OpenMP for clang
+        if: matrix.compiler == 'clang' && matrix.omp != ''
+        run: sudo apt-get update && sudo apt-get install -y libomp-dev
+
       - name: Extract test data
         run: |
           mkdir -p testdata/16S500 testdata/BigCOGs
