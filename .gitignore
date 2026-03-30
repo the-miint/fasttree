@@ -1,0 +1,22 @@
+# Build artifacts
+*.o
+*.pic.o
+*.a
+*.so
+FastTree
+FastTree.orig
+FastTree.new
+FastTree.omp
+FastTree.orig.omp
+test_api
+
+# Transform scripts (one-time use)
+phase3c_transform.py
+phase3f_transform.py
+
+# Test data (large, extracted from tarballs)
+testdata/16S500/
+testdata/BigCOGs/
+
+# Don't ignore ground truth — it's small and needed for CI
+# testdata/ground_truth/
