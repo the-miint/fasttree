@@ -7392,10 +7392,24 @@ top_hits_t *InitTopHits(fasttree_ctx_t *ft_ctx, NJ_t *NJ, int m) {
 }
 
 /* Helper function for sorting in SetAllLeafTopHits,
-   and the global variables it needs
-*/
-NJ_t *CompareSeedNJ = NULL;
-int *CompareSeedGaps = NULL;
+   and the per-thread variables it needs.
+
+   qsort's comparator can't take an extra argument, so SetAllLeafTopHits
+   stashes the NJ tree and gap counts in these file-scope variables before
+   calling qsort. They are thread-local so concurrent SetAllLeafTopHits
+   calls on independent contexts (a documented use case in fasttree.h)
+   don't clobber each other. */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__)
+#  define FT_THREAD_LOCAL _Thread_local
+#elif defined(__GNUC__) || defined(__clang__)
+#  define FT_THREAD_LOCAL __thread
+#elif defined(_MSC_VER)
+#  define FT_THREAD_LOCAL __declspec(thread)
+#else
+#  define FT_THREAD_LOCAL  /* single-threaded fallback */
+#endif
+static FT_THREAD_LOCAL NJ_t *CompareSeedNJ = NULL;
+static FT_THREAD_LOCAL int *CompareSeedGaps = NULL;
 int CompareSeeds(const void *c1, const void *c2) {
   int seed1 = *(int *)c1;
   int seed2 = *(int *)c2;
@@ -8472,12 +8486,18 @@ double pnorm(double x)
 	   ( t *( t * ( t * ( t * b5 + b4 ) + b3 ) + b2 ) + b1 ));
 }
 
-/* ── Arena allocator implementation ─────────────────────────────── */
+/* ── Tracking allocator implementation ──────────────────────────────
+   Each mymalloc returns a system-malloc'd block fronted by an
+   ft_arena_block_t header that links it into a doubly-linked list
+   rooted at arena->head.  myfree unlinks one block and frees it;
+   ft_arena_destroy walks the list and frees everything still linked.
+   That last property is what catches in-flight allocations on longjmp,
+   so the API contract for error cleanup still holds. */
 
 #define ARENA_ALIGN 16
-#define ARENA_ALIGN_UP(x) (((x) + (ARENA_ALIGN - 1)) & ~(size_t)(ARENA_ALIGN - 1))
 
-/* Helpers that call the custom allocator or fall back to system malloc/free */
+/* Helpers that call the custom allocator or fall back to system malloc/free.
+   Custom allocators don't get realloc — they go through alloc-new + memcpy + free-old. */
 static void *arena_raw_alloc(ft_arena_t *arena, size_t size) {
   if (arena->alloc_fn)
     return arena->alloc_fn(size, arena->alloc_user_data);
@@ -8491,9 +8511,22 @@ static void arena_raw_free(ft_arena_t *arena, void *ptr) {
     free(ptr);
 }
 
+/* Link/unlink helpers — caller holds the arena lock. */
+static void arena_link_head(ft_arena_t *arena, ft_arena_block_t *b) {
+  b->prev = NULL;
+  b->next = arena->head;
+  if (arena->head) arena->head->prev = b;
+  arena->head = b;
+}
+
+static void arena_unlink(ft_arena_t *arena, ft_arena_block_t *b) {
+  if (b->prev) b->prev->next = b->next;
+  else         arena->head    = b->next;
+  if (b->next) b->next->prev = b->prev;
+}
+
 void ft_arena_init(ft_arena_t *arena) {
   arena->head = NULL;
-  arena->block_size = FT_ARENA_DEFAULT_BLOCK_SIZE;
   arena->alloc_fn = NULL;
   arena->free_fn = NULL;
   arena->alloc_user_data = NULL;
@@ -8501,46 +8534,94 @@ void ft_arena_init(ft_arena_t *arena) {
      because ft_arena_init is called repeatedly to reset the arena. */
 }
 
-static ft_arena_block_t *ft_arena_new_block(ft_arena_t *arena, size_t data_size) {
-  ft_arena_block_t *b = (ft_arena_block_t *)arena_raw_alloc(arena,
-      sizeof(ft_arena_block_t) + data_size);
-  if (b == NULL) return NULL;
-  assert(((uintptr_t)b % ARENA_ALIGN) == 0);  /* allocator must return aligned memory */
-  b->next = NULL;
-  b->size = data_size;
-  b->used = 0;
-  return b;
-}
-
 void *ft_arena_alloc(ft_arena_t *arena, size_t size) {
   if (size == 0) return NULL;
-  size_t aligned = ARENA_ALIGN_UP(size);
-  void *p = NULL;
+  ft_arena_block_t *b = (ft_arena_block_t *)arena_raw_alloc(arena,
+      sizeof(ft_arena_block_t) + size);
+  if (b == NULL) return NULL;
+  assert(((uintptr_t)b % ARENA_ALIGN) == 0);
+  b->size = size;
 
 #ifdef OPENMP
   omp_set_lock(&arena->lock);
 #endif
-
-  /* Try current head block */
-  if (arena->head != NULL && arena->head->used + aligned <= arena->head->size) {
-    p = arena->head->data + arena->head->used;
-    arena->head->used += aligned;
-  } else {
-    /* Need a new block. Oversized allocations get their own block. */
-    size_t block_data_size = aligned > arena->block_size ? aligned : arena->block_size;
-    ft_arena_block_t *b = ft_arena_new_block(arena, block_data_size);
-    if (b != NULL) {
-      b->next = arena->head;
-      arena->head = b;
-      p = b->data;
-      b->used = aligned;
-    }
-  }
-
+  arena_link_head(arena, b);
 #ifdef OPENMP
   omp_unset_lock(&arena->lock);
 #endif
-  return p;
+  return b->data;
+}
+
+void ft_arena_free(ft_arena_t *arena, void *ptr) {
+  if (ptr == NULL) return;
+  ft_arena_block_t *b = (ft_arena_block_t *)
+      ((char *)ptr - offsetof(ft_arena_block_t, data));
+#ifdef OPENMP
+  omp_set_lock(&arena->lock);
+#endif
+  arena_unlink(arena, b);
+#ifdef OPENMP
+  omp_unset_lock(&arena->lock);
+#endif
+  arena_raw_free(arena, b);
+}
+
+void *ft_arena_realloc(ft_arena_t *arena, void *old, size_t new_size) {
+  if (old == NULL) return ft_arena_alloc(arena, new_size);
+  if (new_size == 0) { ft_arena_free(arena, old); return NULL; }
+
+  ft_arena_block_t *b = (ft_arena_block_t *)
+      ((char *)old - offsetof(ft_arena_block_t, data));
+  ft_arena_block_t *nb;
+
+  if (arena->alloc_fn) {
+    /* Custom allocator: alloc new, copy, free old. */
+    nb = (ft_arena_block_t *)arena->alloc_fn(
+        sizeof(ft_arena_block_t) + new_size, arena->alloc_user_data);
+    if (nb == NULL) return NULL;
+    size_t copy = b->size < new_size ? b->size : new_size;
+    memcpy(nb->data, b->data, copy);
+#ifdef OPENMP
+    omp_set_lock(&arena->lock);
+#endif
+    arena_unlink(arena, b);
+#ifdef OPENMP
+    omp_unset_lock(&arena->lock);
+#endif
+    arena->free_fn(b, arena->alloc_user_data);
+  } else {
+    /* System malloc: realloc can grow in place, which is the whole point. */
+#ifdef OPENMP
+    omp_set_lock(&arena->lock);
+#endif
+    arena_unlink(arena, b);
+#ifdef OPENMP
+    omp_unset_lock(&arena->lock);
+#endif
+    nb = (ft_arena_block_t *)realloc(b, sizeof(ft_arena_block_t) + new_size);
+    if (nb == NULL) {
+      /* realloc failed and left b intact — relink b. */
+#ifdef OPENMP
+      omp_set_lock(&arena->lock);
+#endif
+      arena_link_head(arena, b);
+#ifdef OPENMP
+      omp_unset_lock(&arena->lock);
+#endif
+      return NULL;
+    }
+    assert(((uintptr_t)nb % ARENA_ALIGN) == 0);
+  }
+
+  nb->size = new_size;
+#ifdef OPENMP
+  omp_set_lock(&arena->lock);
+#endif
+  arena_link_head(arena, nb);
+#ifdef OPENMP
+  omp_unset_lock(&arena->lock);
+#endif
+  return nb->data;
 }
 
 void ft_arena_destroy(ft_arena_t *arena) {
@@ -8551,18 +8632,16 @@ void ft_arena_destroy(ft_arena_t *arena) {
     b = next;
   }
   arena->head = NULL;
-  arena->block_size = FT_ARENA_DEFAULT_BLOCK_SIZE;
   /* Note: OMP lock lifecycle is managed by ft_arena_init/fasttree_destroy,
      not here, because ft_arena_destroy+ft_arena_init is called as a pair
      to reset the arena between builds. The lock stays valid across resets. */
 }
 
-/* ── mymalloc/myfree/myrealloc — arena-backed ─────────────────────
-   All computation memory goes through the arena. On longjmp error,
-   ft_arena_destroy reclaims everything in one call.
-   myfree is a logical no-op (arena doesn't support individual frees).
-   myrealloc always allocates new + copies; old memory is reclaimed
-   when the arena is destroyed. */
+/* ── mymalloc/myfree/myrealloc — tracking-allocator-backed ─────────
+   On longjmp error, ft_arena_destroy walks the per-ctx allocation
+   list and frees anything still active.  Under normal flow myfree
+   actually frees, so peak RSS matches upstream FastTree.c instead of
+   accumulating across the whole build. */
 
 void *mymalloc(fasttree_ctx_t *ft_ctx, size_t sz) {
   if (sz == 0) return(NULL);
@@ -8596,22 +8675,31 @@ void *myrealloc(fasttree_ctx_t *ft_ctx, void *data, size_t szOld, size_t szNew, 
   }
   if (szOld == szNew)
     return(data);
-  /* Arena doesn't support in-place realloc. Always alloc new + copy. */
-  void *new = mymalloc(ft_ctx, szNew);
   if (bCopy) {
+    /* Match upstream: alloc new, copy, free old (helps fragmentation). */
+    void *new = mymalloc(ft_ctx, szNew);
     size_t szCopy = szOld < szNew ? szOld : szNew;
     memcpy(new, data, szCopy);
+    myfree(ft_ctx, data, szOld);
+    return new;
   }
-  /* Old memory is not freed — arena reclaims it all at destroy time.
-     mymalloc already incremented szAllAlloc/mymallocUsed for the new block. */
-  return(new);
+  /* No-copy realloc: ft_arena_realloc uses system realloc which can grow in place. */
+  void *new = ft_arena_realloc(&ft_ctx->arena, data, szNew);
+  if (new == NULL) {
+    snprintf(ft_ctx->error_msg, sizeof(ft_ctx->error_msg),
+             "Out of memory reallocating %zu bytes", szNew);
+    longjmp(ft_ctx->error_jmp, FASTTREE_ERR_NOMEM);
+  }
+  FT_szAllAlloc += (szNew - szOld);
+  FT_mymallocUsed += (szNew - szOld);
+  assert(IS_ALIGNED(new));
+  return new;
 }
 
 void *myfree(fasttree_ctx_t *ft_ctx, void *p, size_t sz) {
-  (void)ft_ctx; (void)sz;
   if(p==NULL) return(NULL);
-  /* Arena doesn't support individual frees. Memory is reclaimed
-     by ft_arena_destroy when the context is destroyed or reset. */
+  ft_arena_free(&ft_ctx->arena, p);
+  FT_mymallocUsed -= sz;
   return(NULL);
 }
 

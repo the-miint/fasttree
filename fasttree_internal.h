@@ -289,28 +289,28 @@ typedef struct {
 /* ── Arena allocator ─────────────────────────────────────────────── */
 
 /*
- * Simple arena: linked list of large blocks.
- * All allocations during fasttree_build() go through the arena.
- * On longjmp error, fasttree_destroy() frees the entire arena.
+ * Tracking allocator: each mymalloc returns a system-malloc'd block with a
+ * small per-allocation header that links it into a doubly-linked list rooted
+ * at arena->head.  myfree unlinks and frees a single block; ft_arena_destroy
+ * walks the list and frees everything still linked, which is what catches
+ * any in-flight allocations on longjmp.
+ *
+ * (The previous design was a bump arena that never reclaimed individual
+ * allocations.  That made myfree a no-op and caused memory growth of ~370x
+ * vs upstream FastTree.c on real inputs.)
  */
-
-#define FT_ARENA_DEFAULT_BLOCK_SIZE (1 << 20)  /* 1 MiB */
 
 typedef struct ft_arena_block {
   struct ft_arena_block *next;
-  size_t size;       /* usable bytes in data[] */
-  size_t used;       /* bytes consumed so far */
-  size_t _pad;       /* pad header to 32 bytes for 16-byte-aligned data[] */
+  struct ft_arena_block *prev;
+  size_t size;     /* user-requested size (excluding header) */
+  size_t _pad;     /* pad header to 32 bytes so data[] is 16-byte aligned */
   char data[];
 } ft_arena_block_t;
 
 typedef struct {
   ft_arena_block_t *head;
-  size_t block_size;
-  /* Oversized allocations (> block_size) get their own block at the
-     head of the same linked list.  No separate tracking needed since
-     ft_arena_destroy walks the entire list. */
-  /* Custom allocator (NULL = use system malloc/free) */
+  /* Custom allocator (NULL = use system malloc/realloc/free) */
   void *(*alloc_fn)(size_t size, void *user_data);
   void  (*free_fn)(void *ptr, void *user_data);
   void  *alloc_user_data;
@@ -324,6 +324,8 @@ _Static_assert(sizeof(ft_arena_block_t) % 16 == 0,
 
 void  ft_arena_init(ft_arena_t *arena);
 void *ft_arena_alloc(ft_arena_t *arena, size_t size);
+void  ft_arena_free(ft_arena_t *arena, void *ptr);
+void *ft_arena_realloc(ft_arena_t *arena, void *old, size_t new_size);
 void  ft_arena_destroy(ft_arena_t *arena);
 
 /* ── Context struct ──────────────────────────────────────────────── */

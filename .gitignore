@@ -10,6 +10,9 @@ FastTree.omp
 FastTree.orig.omp
 test_api
 test_parity
+test_threads
+test_threads.asan
+test_threads.dbg
 
 # Transform scripts (one-time use)
 phase3c_transform.py

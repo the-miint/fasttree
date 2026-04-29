@@ -57,11 +57,16 @@ test_api: test_api.c libfasttree.a
 test_parity: test_parity.c libfasttree.a
 	$(CC) $(CFLAGS) -o $@ $< libfasttree.a $(LDFLAGS)
 
+# Thread-safety driver: spawns N threads, each runs fasttree_build_soa with its
+# own ctx on the same input, asserts every thread's Newick equals the ground truth.
+test_threads: test_threads.c libfasttree.a
+	$(CC) $(CFLAGS) -pthread -o $@ $< libfasttree.a $(LDFLAGS)
+
 # Ground truth tests use FastTree.orig (always non-OMP) because
 # -DOPENMP changes algorithmic behavior (disables star topology test).
 # The library parity tests confirm fasttree_build_soa output is bit-identical
 # to FastTree.orig on the same inputs (no -DOPENMP).
-test: FastTree.orig test_parity
+test: FastTree.orig test_parity test_threads
 	@echo "=== Ground truth tests (CLI vs saved reference) ==="
 	@for f in 16S.1 16S.2; do \
 	  ./FastTree.orig -seed 12345 -nt < testdata/16S500/$$f.p 2>/dev/null | \
@@ -84,6 +89,11 @@ test: FastTree.orig test_parity
 	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
 	    echo "PASS: $$f (library)" || echo "FAIL: $$f (library)"; \
 	done
+	@echo "=== Thread-safety tests (concurrent contexts vs reference) ==="
+	@./test_threads testdata/16S500/16S.1.p testdata/ground_truth/16S.1.nwk 4 -nt 2>/dev/null \
+	  && echo "PASS: 16S.1 (4 threads)" || echo "FAIL: 16S.1 (4 threads)"
+	@./test_threads testdata/BigCOGs/COG6.500.p testdata/ground_truth/COG6.nwk 4 2>/dev/null \
+	  && echo "PASS: COG6 (4 threads)" || echo "FAIL: COG6 (4 threads)"
 
 PREFIX ?= /usr/local
 install: libfasttree.a libfasttree.so FastTree fasttree.h
@@ -94,6 +104,6 @@ install: libfasttree.a libfasttree.so FastTree fasttree.h
 	install -m 755 FastTree $(PREFIX)/bin/
 
 clean:
-	rm -f *.o *.pic.o libfasttree.a libfasttree.so FastTree FastTree.orig test_api test_parity
+	rm -f *.o *.pic.o libfasttree.a libfasttree.so FastTree FastTree.orig test_api test_parity test_threads
 
 .PHONY: all clean install test
