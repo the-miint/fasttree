@@ -329,11 +329,12 @@ static void _run_algorithm(fasttree_ctx_t *ft_ctx,
 
     OptimizeAllBranchLengths(ft_ctx, NJ);
 
-    if (resetGtr)
-      SetMLGtr(ft_ctx, NJ, NULL, NULL);
-    SetMLRates(ft_ctx, NJ, nRateCats);
-
-    /* ML NNI rounds — matches reference in main() exactly */
+    /* ML NNI rounds — matches reference in main() exactly.
+       Note: SetMLGtr/SetMLRates are NOT called before the loop. main()
+       fits the CAT rate model only after the first ML NNI round (see the
+       in-loop branch on iMLnni==0 && nRateCategories==1). Calling
+       SetMLRates here would change the rate model used by the very first
+       NNI and diverge from the CLI. */
     for (i = 0; i < MLnniToDo; i++) {
       double maxDelta;
       NNI(ft_ctx, NJ, i, MLnniToDo, /*useML*/true, nni_stats, &maxDelta);

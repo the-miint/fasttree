@@ -52,10 +52,17 @@ FastTree: fasttree_core.c fasttree_api.o $(HEADERS)
 test_api: test_api.c libfasttree.a
 	$(CC) $(CFLAGS) -o $@ $< libfasttree.a $(LDFLAGS)
 
+# Library parity driver: reads PHYLIP, calls fasttree_build_soa, writes Newick.
+# Used by the parity test to confirm the library API path is bit-equal to FastTree.orig.
+test_parity: test_parity.c libfasttree.a
+	$(CC) $(CFLAGS) -o $@ $< libfasttree.a $(LDFLAGS)
+
 # Ground truth tests use FastTree.orig (always non-OMP) because
 # -DOPENMP changes algorithmic behavior (disables star topology test).
-test: FastTree.orig
-	@echo "=== Ground truth tests (vs saved reference) ==="
+# The library parity tests confirm fasttree_build_soa output is bit-identical
+# to FastTree.orig on the same inputs (no -DOPENMP).
+test: FastTree.orig test_parity
+	@echo "=== Ground truth tests (CLI vs saved reference) ==="
 	@for f in 16S.1 16S.2; do \
 	  ./FastTree.orig -seed 12345 -nt < testdata/16S500/$$f.p 2>/dev/null | \
 	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
@@ -65,6 +72,17 @@ test: FastTree.orig
 	  ./FastTree.orig -seed 12345 < testdata/BigCOGs/$$f.500.p 2>/dev/null | \
 	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
 	    echo "PASS: $$f" || echo "FAIL: $$f"; \
+	done
+	@echo "=== Library parity tests (API vs saved reference) ==="
+	@for f in 16S.1 16S.2; do \
+	  ./test_parity testdata/16S500/$$f.p -nt 2>/dev/null | \
+	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
+	    echo "PASS: $$f (library)" || echo "FAIL: $$f (library)"; \
+	done
+	@for f in COG6 COG9; do \
+	  ./test_parity testdata/BigCOGs/$$f.500.p 2>/dev/null | \
+	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
+	    echo "PASS: $$f (library)" || echo "FAIL: $$f (library)"; \
 	done
 
 PREFIX ?= /usr/local
@@ -76,6 +94,6 @@ install: libfasttree.a libfasttree.so FastTree fasttree.h
 	install -m 755 FastTree $(PREFIX)/bin/
 
 clean:
-	rm -f *.o *.pic.o libfasttree.a libfasttree.so FastTree FastTree.orig test_api
+	rm -f *.o *.pic.o libfasttree.a libfasttree.so FastTree FastTree.orig test_api test_parity
 
 .PHONY: all clean install test

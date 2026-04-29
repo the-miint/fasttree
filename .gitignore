@@ -9,6 +9,7 @@ FastTree.new
 FastTree.omp
 FastTree.orig.omp
 test_api
+test_parity
 
 # Transform scripts (one-time use)
 phase3c_transform.py
