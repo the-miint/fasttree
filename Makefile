@@ -48,6 +48,14 @@ libfasttree.so: fasttree_core.pic.o fasttree_api.pic.o
 FastTree: fasttree_core.c fasttree_api.o $(HEADERS)
 	$(CC) $(CFLAGS) -o $@ fasttree_core.c fasttree_api.o $(LDFLAGS)
 
+# OMP-forced CLI binary: always compiled with -DOPENMP -fopenmp, regardless of
+# the OMP=1 flag. Used by the single-thread OMP parity regression test, which
+# guards against the upstream MLQuartetNNI divergence where #ifdef OPENMP
+# unconditionally disables the star-topology shortcut and replaces the
+# bStarTest early-exit with an omp section directive.
+FastTree.omp: fasttree_core.c fasttree_api.c $(HEADERS)
+	$(CC) $(CFLAGS) -DOPENMP -fopenmp -o $@ fasttree_core.c fasttree_api.c -lm -fopenmp
+
 # API test (link statically to avoid LD_LIBRARY_PATH)
 test_api: test_api.c libfasttree.a
 	$(CC) $(CFLAGS) -o $@ $< libfasttree.a $(LDFLAGS)
@@ -62,11 +70,13 @@ test_parity: test_parity.c libfasttree.a
 test_threads: test_threads.c libfasttree.a
 	$(CC) $(CFLAGS) -pthread -o $@ $< libfasttree.a $(LDFLAGS)
 
-# Ground truth tests use FastTree.orig (always non-OMP) because
-# -DOPENMP changes algorithmic behavior (disables star topology test).
-# The library parity tests confirm fasttree_build_soa output is bit-identical
-# to FastTree.orig on the same inputs (no -DOPENMP).
-test: FastTree.orig test_parity test_threads
+# Ground truth tests use FastTree.orig (always non-OMP, when invoked as
+# `make test`) for the saved reference. The library parity tests confirm
+# fasttree_build_soa output is bit-identical on the same inputs.
+# The OMP single-thread parity tests use a dedicated FastTree.omp binary
+# (always built with -DOPENMP) to guarantee the OMP code path is exercised
+# at one thread, regression-guarding the MLQuartetNNI single-thread fix.
+test: FastTree.orig FastTree.omp test_parity test_threads
 	@echo "=== Ground truth tests (CLI vs saved reference) ==="
 	@for f in 16S.1 16S.2; do \
 	  ./FastTree.orig -seed 12345 -nt < testdata/16S500/$$f.p 2>/dev/null | \
@@ -89,6 +99,17 @@ test: FastTree.orig test_parity test_threads
 	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
 	    echo "PASS: $$f (library)" || echo "FAIL: $$f (library)"; \
 	done
+	@echo "=== OMP single-thread parity tests (regression for upstream OPENMP override) ==="
+	@for f in 16S.1 16S.2; do \
+	  OMP_NUM_THREADS=1 ./FastTree.omp -seed 12345 -nt < testdata/16S500/$$f.p 2>/dev/null | \
+	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
+	    echo "PASS: $$f (omp 1 thread)" || echo "FAIL: $$f (omp 1 thread)"; \
+	done
+	@for f in COG6 COG9; do \
+	  OMP_NUM_THREADS=1 ./FastTree.omp -seed 12345 < testdata/BigCOGs/$$f.500.p 2>/dev/null | \
+	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
+	    echo "PASS: $$f (omp 1 thread)" || echo "FAIL: $$f (omp 1 thread)"; \
+	done
 	@echo "=== Thread-safety tests (concurrent contexts vs reference) ==="
 	@./test_threads testdata/16S500/16S.1.p testdata/ground_truth/16S.1.nwk 4 -nt 2>/dev/null \
 	  && echo "PASS: 16S.1 (4 threads)" || echo "FAIL: 16S.1 (4 threads)"
@@ -104,6 +125,6 @@ install: libfasttree.a libfasttree.so FastTree fasttree.h
 	install -m 755 FastTree $(PREFIX)/bin/
 
 clean:
-	rm -f *.o *.pic.o libfasttree.a libfasttree.so FastTree FastTree.orig test_api test_parity test_threads
+	rm -f *.o *.pic.o libfasttree.a libfasttree.so FastTree FastTree.omp FastTree.orig test_api test_parity test_threads
 
 .PHONY: all clean install test

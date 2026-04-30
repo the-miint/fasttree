@@ -5335,41 +5335,60 @@ nni_t MLQuartetNNI(fasttree_ctx_t *ft_ctx, profile_t *profiles[4],
   QuartetConstraintPenalties(ft_ctx, profiles, nConstraints, /*OUT*/penalty);
   if (penalty[ABvsCD] > penalty[ACvsBD] || penalty[ABvsCD] > penalty[ADvsBC])
     bFast = false;
+  /* Single-threaded path takes the serial code with the bStarTest early-exit;
+     multi-threaded path takes parallel sections without the early-exit (which
+     forces bFast = false because MLQuartetOptimize cannot short-circuit when
+     its result is consumed by sibling sections). Selecting between the two
+     at runtime keeps OpenMP and non-OpenMP builds bit-equal at one thread
+     while preserving the parallel speedup at higher thread counts. */
+  bool serial_path = true;
 #ifdef OPENMP
-      bFast = false;		/* turn off star topology test */
+  serial_path = (omp_get_max_threads() == 1);
+  if (!serial_path)
+    bFast = false;
 #endif
 
   for (iRound = 0; iRound < nRounds; iRound++) {
     bool bStarTest = false;
-    {
+    if (serial_path) {
+      criteria[ABvsCD] = MLQuartetOptimize(ft_ctx, profiles[0], profiles[1], profiles[2], profiles[3],
+					   nPos, transmat, rates,
+					   /*IN/OUT*/lenABvsCD,
+					   bFast ? &bStarTest : NULL,
+					   /*site_likelihoods*/NULL)
+	- penalty[ABvsCD];	/* subtract penalty b/c we are trying to maximize log lk */
+      if (bStarTest) {
+	FT_nStarTests++;
+	criteria[ACvsBD] = -1e20;
+	criteria[ADvsBC] = -1e20;
+	len[LEN_I] = lenABvsCD[LEN_I];
+	return(ABvsCD);
+      }
+      if (bConsiderAC)
+	criteria[ACvsBD] = MLQuartetOptimize(ft_ctx, profiles[0], profiles[2], profiles[1], profiles[3],
+					     nPos, transmat, rates,
+					     /*IN/OUT*/lenACvsBD, NULL, /*site_likelihoods*/NULL)
+	  - penalty[ACvsBD];
+      if (bConsiderAD)
+	criteria[ADvsBC] = MLQuartetOptimize(ft_ctx, profiles[0], profiles[3], profiles[2], profiles[1],
+					     nPos, transmat, rates,
+					     /*IN/OUT*/lenADvsBC, NULL, /*site_likelihoods*/NULL)
+	  - penalty[ADvsBC];
+    } else {
 #ifdef OPENMP
       #pragma omp parallel
       #pragma omp sections
-#endif
       {
-#ifdef OPENMP
         #pragma omp section
-#endif
 	{
 	  criteria[ABvsCD] = MLQuartetOptimize(ft_ctx, profiles[0], profiles[1], profiles[2], profiles[3],
 					       nPos, transmat, rates,
 					       /*IN/OUT*/lenABvsCD,
 					       bFast ? &bStarTest : NULL,
 					       /*site_likelihoods*/NULL)
-	    - penalty[ABvsCD];	/* subtract penalty b/c we are trying to maximize log lk */
+	    - penalty[ABvsCD];
 	}
-
-#ifdef OPENMP
         #pragma omp section
-#else
-	if (bStarTest) {
-	  FT_nStarTests++;
-	  criteria[ACvsBD] = -1e20;
-	  criteria[ADvsBC] = -1e20;
-	  len[LEN_I] = lenABvsCD[LEN_I];
-	  return(ABvsCD);
-	}
-#endif
 	{
 	  if (bConsiderAC)
 	    criteria[ACvsBD] = MLQuartetOptimize(ft_ctx, profiles[0], profiles[2], profiles[1], profiles[3],
@@ -5377,10 +5396,7 @@ nni_t MLQuartetNNI(fasttree_ctx_t *ft_ctx, profile_t *profiles[4],
 						 /*IN/OUT*/lenACvsBD, NULL, /*site_likelihoods*/NULL)
 	      - penalty[ACvsBD];
 	}
-	
-#ifdef OPENMP
         #pragma omp section
-#endif
 	{
 	  if (bConsiderAD)
 	    criteria[ADvsBC] = MLQuartetOptimize(ft_ctx, profiles[0], profiles[3], profiles[2], profiles[1],
@@ -5389,7 +5405,8 @@ nni_t MLQuartetNNI(fasttree_ctx_t *ft_ctx, profile_t *profiles[4],
 	      - penalty[ADvsBC];
 	}
       }
-    } /* end parallel sections */
+#endif
+    } /* end serial / parallel-sections branch */
     if (FT_mlAccuracy < 2) {
       /* If clearly worse then ABvsCD, or have short internal branch length and worse, then
          give up */
