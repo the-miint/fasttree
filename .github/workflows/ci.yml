@@ -25,8 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Every clang lane needs it: `make test` builds FastTree.omp with
+      # -fopenmp whatever the lane's OMP setting.
       - name: Install OpenMP for clang
-        if: matrix.compiler == 'clang' && matrix.omp != ''
+        if: matrix.compiler == 'clang'
         run: sudo apt-get update && sudo apt-get install -y libomp-dev
 
       - name: Extract test data
@@ -45,9 +47,9 @@ jobs:
 
       # `make test` builds without OpenMP: FastTree.orig must match the saved
       # references, and its drivers link without -fopenmp. Remove what the
-      # build above left so that it rebuilds them.
+      # build above left so that it rebuilds them, with the lane's compiler.
       - name: Run ground truth tests
-        run: make clean && make test
+        run: make clean && make test CC=${{ matrix.cc }}
 
       - name: Build original (sanity check)
         run: make FastTree.orig CC=${{ matrix.cc }}
