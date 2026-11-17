@@ -31,9 +31,8 @@ jobs:
 
       - name: Extract test data
         run: |
-          mkdir -p testdata/16S500 testdata/BigCOGs
-          tar xzf 16S_500.tar.gz -C testdata/16S500/ 2>/dev/null || true
-          tar xzf COG_500.tar.gz -C testdata/BigCOGs/ 2>/dev/null || true
+          tar xzf 16S_500.tar.gz -C testdata/
+          tar xzf COG_500.tar.gz -C testdata/
 
       - name: Build
         run: make all CC=${{ matrix.cc }} ${{ matrix.omp }}
