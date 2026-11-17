@@ -105,13 +105,13 @@ check_trees = st=0; \
 
 # --- wasm32 (emscripten), run under node ---
 #
-# Objects go to build-wasm/ so they never mix with the native ones.
-# Assertions stay on, as in the native build. NODERAWFS lets test_parity
-# read its PHYLIP input from the host filesystem; the 8 MB stack replaces
-# emscripten's 64 KB default.
+# Objects go to build-wasm/ so they never mix with the native ones. C
+# assert()s stay on (no -DNDEBUG), as in the native build. NODERAWFS lets
+# test_parity read its PHYLIP input from the host filesystem, and
+# EXIT_RUNTIME makes main's return value node's exit status.
 EMCC         ?= emcc
 WASM_DIR      = build-wasm
-WASM_LDFLAGS  = -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=8MB -sNODERAWFS=1 -sEXIT_RUNTIME=1
+WASM_LDFLAGS  = -sALLOW_MEMORY_GROWTH=1 -sNODERAWFS=1 -sEXIT_RUNTIME=1
 WASM_LIB      = $(WASM_DIR)/fasttree_core.o $(WASM_DIR)/fasttree_api.o
 
 $(WASM_DIR)/fasttree_core.o: fasttree_core.c $(HEADERS)
