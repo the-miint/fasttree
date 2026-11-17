@@ -34,6 +34,14 @@ jobs:
       - name: Build
         run: make all CC=${{ matrix.cc }} ${{ matrix.omp }}
 
+      # No other step builds single precision, whose SSE code needs 16-byte
+      # arena blocks (ARENA_ALIGN and its static assert).
+      - name: Compile the single-precision SSE build
+        run: |
+          for f in fasttree_core.c fasttree_api.c; do
+            ${{ matrix.cc }} -Wall -O2 -DUSE_SINGLE -DFASTTREE_NO_MAIN -c -o /dev/null $f
+          done
+
       - name: Build test_api
         run: make test_api CC=${{ matrix.cc }} ${{ matrix.omp }}
 
