@@ -78,43 +78,43 @@ test_threads: test_threads.c libfasttree.a
 # at one thread, regression-guarding the MLQuartetNNI single-thread fix.
 test: FastTree.orig FastTree.omp test_parity test_threads
 	@echo "=== Ground truth tests (CLI vs saved reference) ==="
-	@for f in 16S.1 16S.2; do \
+	@st=0; for f in 16S.1 16S.2; do \
 	  ./FastTree.orig -seed 12345 -nt < testdata/16S500/$$f.p 2>/dev/null | \
 	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
-	    echo "PASS: $$f" || echo "FAIL: $$f"; \
-	done
-	@for f in COG6 COG9; do \
+	    echo "PASS: $$f" || { echo "FAIL: $$f"; st=1; }; \
+	done; exit $$st
+	@st=0; for f in COG6 COG9; do \
 	  ./FastTree.orig -seed 12345 < testdata/BigCOGs/$$f.500.p 2>/dev/null | \
 	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
-	    echo "PASS: $$f" || echo "FAIL: $$f"; \
-	done
+	    echo "PASS: $$f" || { echo "FAIL: $$f"; st=1; }; \
+	done; exit $$st
 	@echo "=== Library parity tests (API vs saved reference) ==="
-	@for f in 16S.1 16S.2; do \
+	@st=0; for f in 16S.1 16S.2; do \
 	  ./test_parity testdata/16S500/$$f.p -nt 2>/dev/null | \
 	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
-	    echo "PASS: $$f (library)" || echo "FAIL: $$f (library)"; \
-	done
-	@for f in COG6 COG9; do \
+	    echo "PASS: $$f (library)" || { echo "FAIL: $$f (library)"; st=1; }; \
+	done; exit $$st
+	@st=0; for f in COG6 COG9; do \
 	  ./test_parity testdata/BigCOGs/$$f.500.p 2>/dev/null | \
 	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
-	    echo "PASS: $$f (library)" || echo "FAIL: $$f (library)"; \
-	done
+	    echo "PASS: $$f (library)" || { echo "FAIL: $$f (library)"; st=1; }; \
+	done; exit $$st
 	@echo "=== OMP single-thread parity tests (regression for upstream OPENMP override) ==="
-	@for f in 16S.1 16S.2; do \
+	@st=0; for f in 16S.1 16S.2; do \
 	  OMP_NUM_THREADS=1 ./FastTree.omp -seed 12345 -nt < testdata/16S500/$$f.p 2>/dev/null | \
 	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
-	    echo "PASS: $$f (omp 1 thread)" || echo "FAIL: $$f (omp 1 thread)"; \
-	done
-	@for f in COG6 COG9; do \
+	    echo "PASS: $$f (omp 1 thread)" || { echo "FAIL: $$f (omp 1 thread)"; st=1; }; \
+	done; exit $$st
+	@st=0; for f in COG6 COG9; do \
 	  OMP_NUM_THREADS=1 ./FastTree.omp -seed 12345 < testdata/BigCOGs/$$f.500.p 2>/dev/null | \
 	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
-	    echo "PASS: $$f (omp 1 thread)" || echo "FAIL: $$f (omp 1 thread)"; \
-	done
+	    echo "PASS: $$f (omp 1 thread)" || { echo "FAIL: $$f (omp 1 thread)"; st=1; }; \
+	done; exit $$st
 	@echo "=== Thread-safety tests (concurrent contexts vs reference) ==="
 	@./test_threads testdata/16S500/16S.1.p testdata/ground_truth/16S.1.nwk 4 -nt 2>/dev/null \
-	  && echo "PASS: 16S.1 (4 threads)" || echo "FAIL: 16S.1 (4 threads)"
+	  && echo "PASS: 16S.1 (4 threads)" || { echo "FAIL: 16S.1 (4 threads)"; exit 1; }
 	@./test_threads testdata/BigCOGs/COG6.500.p testdata/ground_truth/COG6.nwk 4 2>/dev/null \
-	  && echo "PASS: COG6 (4 threads)" || echo "FAIL: COG6 (4 threads)"
+	  && echo "PASS: COG6 (4 threads)" || { echo "FAIL: COG6 (4 threads)"; exit 1; }
 
 PREFIX ?= /usr/local
 install: libfasttree.a libfasttree.so FastTree fasttree.h

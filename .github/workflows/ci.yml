@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, feature/*]
+    branches: [main, v2.3.0-miint, 'feature/*']
   pull_request:
-    branches: [main]
+    branches: [main, v2.3.0-miint]
 
 jobs:
   build-and-test:
