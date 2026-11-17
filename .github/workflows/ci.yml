@@ -48,3 +48,24 @@ jobs:
 
       - name: Build original (sanity check)
         run: make FastTree.orig CC=${{ matrix.cc }}
+
+  # wasm32 (emscripten 6.0.9, no OpenMP), run under node. Its malloc
+  # returns 8-byte-aligned blocks, where glibc and macOS return 16, so
+  # this lane checks the library on a libc the native lanes don't cover.
+  wasm:
+    runs-on: ubuntu-latest
+    name: wasm32 (emscripten, node)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mymindstorm/setup-emsdk@v16
+        with:
+          version: 6.0.9
+
+      - name: Extract test data
+        run: |
+          tar xzf 16S_500.tar.gz -C testdata/
+          tar xzf COG_500.tar.gz -C testdata/
+
+      - name: Build and run the API and parity tests under node
+        run: make -j$(nproc) test-wasm

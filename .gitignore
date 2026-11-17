@@ -24,3 +24,6 @@ testdata/BigCOGs/
 
 # Don't ignore ground truth — it's small and needed for CI
 # testdata/ground_truth/
+
+# wasm32 build (make test-wasm)
+build-wasm/
