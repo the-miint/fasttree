@@ -27,3 +27,6 @@ testdata/BigCOGs/
 
 # wasm32 build (make test-wasm)
 build-wasm/
+
+# Tree check output (check_tree.sh)
+test-out/
