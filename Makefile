@@ -75,6 +75,18 @@ test_threads: test_threads.c libfasttree.a
 
 # --- Tree checks ---
 #
+# The inputs are unpacked from the tarballs, each of which carries its own
+# directory under testdata/.
+TESTDATA = testdata/16S500/.unpacked testdata/BigCOGs/.unpacked
+
+testdata/16S500/.unpacked: 16S_500.tar.gz
+	tar xzf $< -C testdata/
+	touch $@
+
+testdata/BigCOGs/.unpacked: COG_500.tar.gz
+	tar xzf $< -C testdata/
+	touch $@
+#
 # $(call check_trees,<label>,<command>,<input prefix>) runs <command> on the
 # four saved inputs and checks each with check_tree.sh: the command must
 # exit 0 and print the saved reference tree. <input prefix> is "<" for a
@@ -118,7 +130,7 @@ $(WASM_DIR)/test_parity.js: test_parity.c $(WASM_LIB)
 
 # The API tests, then the library parity tests against the same saved
 # references as `make test`.
-test-wasm: $(WASM_DIR)/test_api.js $(WASM_DIR)/test_parity.js
+test-wasm: $(WASM_DIR)/test_api.js $(WASM_DIR)/test_parity.js $(TESTDATA)
 	@echo "=== API smoke tests (wasm32, node) ==="
 	@node $(WASM_DIR)/test_api.js
 	@echo "=== Library parity tests (wasm32, node, API vs saved reference) ==="
@@ -130,7 +142,7 @@ test-wasm: $(WASM_DIR)/test_api.js $(WASM_DIR)/test_parity.js
 # The OMP single-thread parity tests use a dedicated FastTree.omp binary
 # (always built with -DOPENMP) to guarantee the OMP code path is exercised
 # at one thread, regression-guarding the MLQuartetNNI single-thread fix.
-test: FastTree.orig FastTree.omp test_parity test_threads
+test: FastTree.orig FastTree.omp test_parity test_threads $(TESTDATA)
 	@echo "=== Ground truth tests (CLI vs saved reference) ==="
 	@$(call check_trees,cli,./FastTree.orig -seed 12345,<)
 	@echo "=== Library parity tests (API vs saved reference) ==="

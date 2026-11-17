@@ -31,11 +31,6 @@ jobs:
         if: matrix.compiler == 'clang'
         run: sudo apt-get update && sudo apt-get install -y libomp-dev
 
-      - name: Extract test data
-        run: |
-          tar xzf 16S_500.tar.gz -C testdata/
-          tar xzf COG_500.tar.gz -C testdata/
-
       - name: Build
         run: make all CC=${{ matrix.cc }} ${{ matrix.omp }}
 
@@ -66,11 +61,6 @@ jobs:
       - uses: mymindstorm/setup-emsdk@v16
         with:
           version: 6.0.9
-
-      - name: Extract test data
-        run: |
-          tar xzf 16S_500.tar.gz -C testdata/
-          tar xzf COG_500.tar.gz -C testdata/
 
       - name: Build and run the API and parity tests under node
         run: make -j$(nproc) test-wasm
