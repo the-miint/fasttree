@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <math.h>
 
 static int n_tests = 0;
 static int n_passed = 0;
@@ -119,6 +120,48 @@ static void test_nucleotide_soa(void) {
   free(nwk);
   fasttree_tree_soa_free(tree);
   fasttree_destroy(ctx);
+  TEST_PASS();
+}
+
+/* With gamma_log_lk set, the stats report the gamma log-likelihood that the
+   CLI prints for the same input; without it, -1. Regenerate the expected
+   value from nt_names/nt_seqs written as FASTA to four.fa:
+     ./FastTree -nt -gamma -seed 12345 four.fa
+   prints "Gamma(20) LogLk = -65.533 ..." on stderr. */
+static void test_gamma_log_lk(void) {
+  static char msg[128];
+  TEST_START("gamma log-likelihood (as the CLI's)");
+  fasttree_config_t config;
+  fasttree_config_init(&config);
+  config.seq_type = FASTTREE_SEQ_NUCLEOTIDE;
+  config.seed = 12345;
+  config.gamma_log_lk = 1;
+  fasttree_ctx_t *ctx = fasttree_create(&config);
+  assert(ctx);
+
+  fasttree_tree_soa_t *tree = NULL;
+  fasttree_stats_t stats;
+  int rc = fasttree_build_soa(ctx, nt_names, nt_seqs, 4, 20, &tree, &stats);
+  if (rc != FASTTREE_OK) TEST_FAIL(fasttree_last_error(ctx));
+  fasttree_tree_soa_free(tree);
+  fasttree_destroy(ctx);
+  if (fabs(stats.gamma_log_lk - (-65.533)) > 0.0005) {
+    snprintf(msg, sizeof(msg), "gamma on: gamma_log_lk %.3f, expected -65.533",
+             stats.gamma_log_lk);
+    TEST_FAIL(msg);
+  }
+
+  ctx = make_ctx(FASTTREE_SEQ_NUCLEOTIDE);
+  assert(ctx);
+  rc = fasttree_build_soa(ctx, nt_names, nt_seqs, 4, 20, &tree, &stats);
+  if (rc != FASTTREE_OK) TEST_FAIL(fasttree_last_error(ctx));
+  fasttree_tree_soa_free(tree);
+  fasttree_destroy(ctx);
+  if (stats.gamma_log_lk != -1.0) {
+    snprintf(msg, sizeof(msg), "gamma off: gamma_log_lk %.3f, expected -1",
+             stats.gamma_log_lk);
+    TEST_FAIL(msg);
+  }
   TEST_PASS();
 }
 
@@ -337,6 +380,7 @@ int main(void) {
   test_protein_aos();
   test_nucleotide_soa();
   test_soa_newick_matches_aos();
+  test_gamma_log_lk();
   test_soa_columnar_access();
   test_duplicate_sequences_aos();
   test_duplicate_sequences_soa();
