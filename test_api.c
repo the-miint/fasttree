@@ -123,45 +123,66 @@ static void test_nucleotide_soa(void) {
   TEST_PASS();
 }
 
-/* With gamma_log_lk set, the stats report the gamma log-likelihood that the
-   CLI prints for the same input; without it, -1. Regenerate the expected
-   value from nt_names/nt_seqs written as FASTA to four.fa:
-     ./FastTree -nt -gamma -seed 12345 four.fa
-   prints "Gamma(20) LogLk = -65.533 ..." on stderr. */
-static void test_gamma_log_lk(void) {
-  static char msg[128];
-  TEST_START("gamma log-likelihood (as the CLI's)");
+/* With gamma_log_lk set, the stats report the gamma log-likelihood that
+   upstream FastTree prints for the same input. Regenerate gamma20_loglk
+   from the nt_names/nt_seqs records:
+     printf '>SeqA\nACGTACGTACGTACGTACGT\n>SeqB\nACGTACGTACGTACGTACGA\n>SeqC\nTGCATGCATGCATGCATGCA\n>SeqD\nTGCATGCATGCATGCATGCG\n' > four.fa
+     make FastTree.orig && ./FastTree.orig -nt -gamma -seed 12345 four.fa
+   prints "Gamma(20) LogLk = -65.533 ..." on stderr, to 3 decimals. Where
+   no gamma likelihood is computed (gamma_log_lk off, ML NNI off, or one
+   rate category), the stats report -1. */
+static const double gamma20_loglk = -65.533;
+
+static fasttree_config_t gamma_config(void) {
   fasttree_config_t config;
   fasttree_config_init(&config);
   config.seq_type = FASTTREE_SEQ_NUCLEOTIDE;
   config.seed = 12345;
   config.gamma_log_lk = 1;
-  fasttree_ctx_t *ctx = fasttree_create(&config);
-  assert(ctx);
+  return config;
+}
 
+/* The stats' gamma_log_lk for a build of nt_seqs, or NAN if it fails. */
+static double built_gamma_log_lk(const fasttree_config_t *config) {
+  fasttree_ctx_t *ctx = fasttree_create(config);
+  assert(ctx);
   fasttree_tree_soa_t *tree = NULL;
   fasttree_stats_t stats;
   int rc = fasttree_build_soa(ctx, nt_names, nt_seqs, 4, 20, &tree, &stats);
-  if (rc != FASTTREE_OK) TEST_FAIL(fasttree_last_error(ctx));
   fasttree_tree_soa_free(tree);
   fasttree_destroy(ctx);
-  if (fabs(stats.gamma_log_lk - (-65.533)) > 0.0005) {
-    snprintf(msg, sizeof(msg), "gamma on: gamma_log_lk %.3f, expected -65.533",
-             stats.gamma_log_lk);
+  return rc == FASTTREE_OK ? stats.gamma_log_lk : NAN;
+}
+
+#define EXPECT_NOT_COMPUTED(what, config) do {                              \
+    double v = built_gamma_log_lk(&(config));                               \
+    if (v != -1.0) {                                                        \
+      snprintf(msg, sizeof(msg), "%s: gamma_log_lk %.3f, expected -1",      \
+               what, v);                                                    \
+      TEST_FAIL(msg);                                                       \
+    }                                                                       \
+  } while (0)
+
+static void test_gamma_log_lk(void) {
+  static char msg[128];
+  TEST_START("gamma log-likelihood (as upstream's)");
+  fasttree_config_t config = gamma_config();
+  double v = built_gamma_log_lk(&config);
+  if (!(fabs(v - gamma20_loglk) <= 0.0005)) {
+    snprintf(msg, sizeof(msg), "gamma on: gamma_log_lk %.3f, expected %.3f",
+             v, gamma20_loglk);
     TEST_FAIL(msg);
   }
 
-  ctx = make_ctx(FASTTREE_SEQ_NUCLEOTIDE);
-  assert(ctx);
-  rc = fasttree_build_soa(ctx, nt_names, nt_seqs, 4, 20, &tree, &stats);
-  if (rc != FASTTREE_OK) TEST_FAIL(fasttree_last_error(ctx));
-  fasttree_tree_soa_free(tree);
-  fasttree_destroy(ctx);
-  if (stats.gamma_log_lk != -1.0) {
-    snprintf(msg, sizeof(msg), "gamma off: gamma_log_lk %.3f, expected -1",
-             stats.gamma_log_lk);
-    TEST_FAIL(msg);
-  }
+  config = gamma_config();
+  config.gamma_log_lk = 0;
+  EXPECT_NOT_COMPUTED("gamma off", config);
+  config = gamma_config();
+  config.ml_nni_rounds = 0;
+  EXPECT_NOT_COMPUTED("ML NNI off", config);
+  config = gamma_config();
+  config.n_rate_cats = 1;
+  EXPECT_NOT_COMPUTED("one rate category", config);
   TEST_PASS();
 }
 
