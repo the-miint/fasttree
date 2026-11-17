@@ -8511,8 +8511,6 @@ double pnorm(double x)
    That last property is what catches in-flight allocations on longjmp,
    so the API contract for error cleanup still holds. */
 
-#define ARENA_ALIGN 16
-
 /* Helpers that call the custom allocator or fall back to system malloc/free.
    Custom allocators don't get realloc — they go through alloc-new + memcpy + free-old. */
 static void *arena_raw_alloc(ft_arena_t *arena, size_t size) {
@@ -8596,6 +8594,7 @@ void *ft_arena_realloc(ft_arena_t *arena, void *old, size_t new_size) {
     nb = (ft_arena_block_t *)arena->alloc_fn(
         sizeof(ft_arena_block_t) + new_size, arena->alloc_user_data);
     if (nb == NULL) return NULL;
+    assert(((uintptr_t)nb % ARENA_ALIGN) == 0);
     size_t copy = b->size < new_size ? b->size : new_size;
     memcpy(nb->data, b->data, copy);
 #ifdef OPENMP
