@@ -43,8 +43,11 @@ jobs:
       - name: Run API smoke tests
         run: ./test_api
 
+      # `make test` builds without OpenMP: FastTree.orig must match the saved
+      # references, and its drivers link without -fopenmp. Remove what the
+      # build above left so that it rebuilds them.
       - name: Run ground truth tests
-        run: make test
+        run: make clean && make test
 
       - name: Build original (sanity check)
         run: make FastTree.orig CC=${{ matrix.cc }}
