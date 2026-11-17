@@ -642,7 +642,8 @@ void SetMLRates(fasttree_ctx_t *ft_ctx, NJ_t *NJ, int nRateCategories);
 numeric_t *MLSiteRates(fasttree_ctx_t *ft_ctx, int nRateCategories);
 double *MLSiteLikelihoodsByRate(fasttree_ctx_t *ft_ctx, NJ_t *NJ, numeric_t *rates, int nRateCategories);
 double RescaleGammaLogLk(fasttree_ctx_t *ft_ctx, int nPos, int nRateCats,
-                         numeric_t *rates, double *site_loglk, FILE *fpLog);
+                         numeric_t *rates, double *site_loglk, FILE *fpLog,
+                         double *gamma_loglk);
 void SetMLGtr(fasttree_ctx_t *ft_ctx, NJ_t *NJ, double *gtrfreq, FILE *fpLog);
 void RecomputeProfiles(fasttree_ctx_t *ft_ctx, NJ_t *NJ, distance_matrix_t *dmat);
 

@@ -159,6 +159,7 @@ typedef struct {
   uniquify_t *unique;
   alignment_t *aln;
   double final_loglk;
+  double gamma_loglk;   /* -1 if not computed */
 } build_result_t;
 
 /* Run the full NJ→NNI/SPR→ML algorithm. On success, result is filled.
@@ -316,6 +317,7 @@ static void _run_algorithm(fasttree_ctx_t *ft_ctx,
 
   SplitCount_t splitcount = {0, 0, 0, 0, 0.0, 0.0};
   double final_loglk = -1.0;
+  double gamma_loglk = -1.0;
 
   if (MLnniToDo > 0) {
     /* Convert profiles for ML */
@@ -367,7 +369,8 @@ static void _run_algorithm(fasttree_ctx_t *ft_ctx,
     if (ft_ctx->bGammaLogLk && nRateCats > 1) {
       numeric_t *rates = MLSiteRates(ft_ctx, nRateCats);
       double *site_loglk = MLSiteLikelihoodsByRate(ft_ctx, NJ, rates, nRateCats);
-      double scale = RescaleGammaLogLk(ft_ctx, NJ->nPos, nRateCats, rates, site_loglk, NULL);
+      double scale = RescaleGammaLogLk(ft_ctx, NJ->nPos, nRateCats, rates, site_loglk, NULL,
+                                       &gamma_loglk);
       rates = myfree(ft_ctx, rates, sizeof(numeric_t) * nRateCats);
       site_loglk = myfree(ft_ctx, site_loglk, sizeof(double) * nRateCats * NJ->nPos);
       for (i = 0; i < NJ->maxnodes; i++)
@@ -383,6 +386,7 @@ static void _run_algorithm(fasttree_ctx_t *ft_ctx,
   result->unique = unique;
   result->aln = aln;
   result->final_loglk = final_loglk;
+  result->gamma_loglk = gamma_loglk;
 }
 
 /* ── Shared counting helpers for AOS/SOA extraction ────────────── */
@@ -662,7 +666,7 @@ static void _fill_stats_and_cleanup(fasttree_ctx_t *ft_ctx,
   if (stats_out) {
     stats_out->n_unique_seqs  = r->unique->nUnique;
     stats_out->log_likelihood = r->final_loglk;
-    stats_out->gamma_log_lk   = -1.0;
+    stats_out->gamma_log_lk   = r->gamma_loglk;
     stats_out->n_nni          = FT_nNNI;
     stats_out->n_spr          = FT_nSPR;
     stats_out->n_ml_nni       = FT_nML_NNI;
