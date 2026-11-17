@@ -40,9 +40,11 @@ jobs:
       - name: Run API smoke tests
         run: ./test_api
 
-      # `make test` builds without OpenMP: FastTree.orig must match the saved
-      # references, and its drivers link without -fopenmp. Remove what the
-      # build above left so that it rebuilds them, with the lane's compiler.
+      # `make test` builds the library, FastTree.orig and the test drivers
+      # without OpenMP (FastTree.omp always has it): FastTree.orig must match
+      # the saved references, and the drivers link without -fopenmp. Remove
+      # what the build above left so that it rebuilds them, with the lane's
+      # compiler.
       - name: Run ground truth tests
         run: make clean && make test CC=${{ matrix.cc }}
 

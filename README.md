@@ -11,9 +11,11 @@ make            # builds FastTree binary + libfasttree.a + libfasttree.so
 make OMP=1      # with OpenMP multi-threading
 make test       # run ground truth tests (bit-identical output verification)
 make test_api   # run library API smoke tests
+make test-wasm  # build for wasm32 with emscripten; run the API and parity tests under node
 ```
 
-Requires a C99 compiler (gcc or clang) and `-lm`.
+Requires a C11 compiler (gcc or clang) and `-lm`. `make test-wasm` needs emscripten's `emcc`
+(CI uses emsdk 6.0.9) and node on the `PATH`.
 
 ## Command-Line Usage
 
