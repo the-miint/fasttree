@@ -142,20 +142,30 @@ static fasttree_config_t gamma_config(void) {
   return config;
 }
 
-/* The stats' gamma_log_lk for a build of nt_seqs, or NAN if it fails. */
-static double built_gamma_log_lk(const fasttree_config_t *config) {
+/* The library's error from the last failed build_gamma_log_lk. */
+static char build_error[256];
+
+/* Builds nt_seqs and stores the stats' gamma_log_lk in *out. Returns 0, or
+   -1 with the library's error in build_error if the build fails. */
+static int build_gamma_log_lk(const fasttree_config_t *config, double *out) {
   fasttree_ctx_t *ctx = fasttree_create(config);
   assert(ctx);
   fasttree_tree_soa_t *tree = NULL;
   fasttree_stats_t stats;
   int rc = fasttree_build_soa(ctx, nt_names, nt_seqs, 4, 20, &tree, &stats);
+  if (rc != FASTTREE_OK)
+    snprintf(build_error, sizeof(build_error), "build failed: %s",
+             fasttree_last_error(ctx));
+  else
+    *out = stats.gamma_log_lk;
   fasttree_tree_soa_free(tree);
   fasttree_destroy(ctx);
-  return rc == FASTTREE_OK ? stats.gamma_log_lk : NAN;
+  return rc == FASTTREE_OK ? 0 : -1;
 }
 
 #define EXPECT_NOT_COMPUTED(what, config) do {                              \
-    double v = built_gamma_log_lk(&(config));                               \
+    double v;                                                               \
+    if (build_gamma_log_lk(&(config), &v) != 0) TEST_FAIL(build_error);     \
     if (v != -1.0) {                                                        \
       snprintf(msg, sizeof(msg), "%s: gamma_log_lk %.3f, expected -1",      \
                what, v);                                                    \
@@ -167,7 +177,8 @@ static void test_gamma_log_lk(void) {
   static char msg[128];
   TEST_START("gamma log-likelihood (as upstream's)");
   fasttree_config_t config = gamma_config();
-  double v = built_gamma_log_lk(&config);
+  double v;
+  if (build_gamma_log_lk(&config, &v) != 0) TEST_FAIL(build_error);
   if (!(fabs(v - gamma20_loglk) <= 0.0005)) {
     snprintf(msg, sizeof(msg), "gamma on: gamma_log_lk %.3f, expected %.3f",
              v, gamma20_loglk);
