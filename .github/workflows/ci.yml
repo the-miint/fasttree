@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main, v2.3.0-miint, 'feature/*']
+    tags: ['v*-miint']
   pull_request:
     branches: [main, v2.3.0-miint]
+  workflow_dispatch:
 
 jobs:
   build-and-test:
@@ -23,7 +25,7 @@ jobs:
     name: ${{ matrix.compiler }}${{ matrix.omp && ' +OMP' || '' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Every clang lane needs it: `make test` builds FastTree.omp with
       # -fopenmp whatever the lane's OMP setting.
@@ -66,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     name: wasm32 (emscripten, node)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: mymindstorm/setup-emsdk@v16
         with:
@@ -74,3 +76,13 @@ jobs:
 
       - name: Build and run the API and parity tests under node
         run: make -j$(nproc) test-wasm
+
+  # A release tag must name the version the library reports (fasttree.h).
+  version:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check the tag against fasttree.h
+        run: sh ./check_version.sh "$GITHUB_REF_NAME"
