@@ -300,11 +300,28 @@ typedef struct {
  * vs upstream FastTree.c on real inputs.)
  */
 
+/* Every arena block, and so every mymalloc result, is aligned to
+ * ARENA_ALIGN. The single-precision SSE code loads 16-byte vectors from
+ * them. Every other build stores only scalars, pointers and structs of
+ * them, which need no more than malloc's alignment, the target's
+ * _Alignof(max_align_t): 16 on x86_64, 8 under emscripten. A custom
+ * alloc_fn returns 16-byte-aligned blocks (fasttree.h), enough for both.
+ */
+#ifdef USE_SSE3
+#define ARENA_ALIGN 16
+_Static_assert(_Alignof(max_align_t) >= 16,
+               "single-precision SSE builds need malloc to return 16-byte-aligned blocks");
+#else
+#define ARENA_ALIGN _Alignof(max_align_t)
+#endif
+
 typedef struct ft_arena_block {
   struct ft_arena_block *next;
   struct ft_arena_block *prev;
   size_t size;     /* user-requested size (excluding header) */
-  size_t _pad;     /* pad header to 32 bytes so data[] is 16-byte aligned */
+  size_t _pad;     /* pads the header to a multiple of 16 bytes (32 on 64-bit
+                      targets, 16 on 32-bit ones) so data[] keeps the
+                      block's alignment */
   char data[];
 } ft_arena_block_t;
 
@@ -319,8 +336,8 @@ typedef struct {
 #endif
 } ft_arena_t;
 
-_Static_assert(sizeof(ft_arena_block_t) % 16 == 0,
-               "ft_arena_block_t header must be a multiple of 16 for aligned data[]");
+_Static_assert(offsetof(ft_arena_block_t, data) % ARENA_ALIGN == 0,
+               "the ft_arena_block_t header must keep data[] aligned to ARENA_ALIGN");
 
 void  ft_arena_init(ft_arena_t *arena);
 void *ft_arena_alloc(ft_arena_t *arena, size_t size);
@@ -625,7 +642,8 @@ void SetMLRates(fasttree_ctx_t *ft_ctx, NJ_t *NJ, int nRateCategories);
 numeric_t *MLSiteRates(fasttree_ctx_t *ft_ctx, int nRateCategories);
 double *MLSiteLikelihoodsByRate(fasttree_ctx_t *ft_ctx, NJ_t *NJ, numeric_t *rates, int nRateCategories);
 double RescaleGammaLogLk(fasttree_ctx_t *ft_ctx, int nPos, int nRateCats,
-                         numeric_t *rates, double *site_loglk, FILE *fpLog);
+                         numeric_t *rates, double *site_loglk, FILE *fpLog,
+                         double *gamma_loglk);
 void SetMLGtr(fasttree_ctx_t *ft_ctx, NJ_t *NJ, double *gtrfreq, FILE *fpLog);
 void RecomputeProfiles(fasttree_ctx_t *ft_ctx, NJ_t *NJ, distance_matrix_t *dmat);
 

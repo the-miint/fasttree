@@ -300,7 +300,7 @@
 #endif
 #endif
 
-#define FT_VERSION "2.2.0"
+#define FT_VERSION FASTTREE_VERSION_STRING
 
 char *usage =
   "  FastTree protein_alignment > tree\n"
@@ -997,11 +997,12 @@ double GammaLogLk(fasttree_ctx_t *ft_ctx, /*IN*/siteratelk_t *s, /*OPTIONAL OUT*
 /* Input site_loglk must be for each rate. Note that FastTree does not reoptimize
    the branch lengths under the Gamma model -- it optimizes the overall scale.
    Reports the gamma log likelihhod (and logs site likelihoods if fpLog is set),
-   and reports the rescaling value.
+   and reports the rescaling value. If gamma_loglk is not NULL, it receives the
+   gamma log likelihood.
 */
 double RescaleGammaLogLk(fasttree_ctx_t *ft_ctx, int nPos, int nRateCats,
 			/*IN*/numeric_t *rates, /*IN*/double *site_loglk,
-			/*OPTIONAL*/FILE *fpLog);
+			/*OPTIONAL*/FILE *fpLog, /*OPTIONAL OUT*/double *gamma_loglk);
 
 /* P(value<=x) for the gamma distribution with shape parameter alpha and scale 1/alpha */
 double PGamma(double x, double alpha);
@@ -2076,7 +2077,8 @@ int main(int argc, char **argv) {
 	if (FT_gammaLogLk && nRateCats > 1) {
 	  numeric_t *rates = MLSiteRates(ft_ctx, nRateCats);
 	  double *site_loglk = MLSiteLikelihoodsByRate(ft_ctx, NJ, rates, nRateCats);
-	  double scale = RescaleGammaLogLk(ft_ctx, NJ->nPos, nRateCats, rates, /*IN*/site_loglk, /*OPTIONAL*/fpLog);
+	  double scale = RescaleGammaLogLk(ft_ctx, NJ->nPos, nRateCats, rates, /*IN*/site_loglk, /*OPTIONAL*/fpLog,
+					   /*OPTIONAL OUT*/NULL);
 	  rates = myfree(ft_ctx, rates, sizeof(numeric_t) * nRateCats);
 	  site_loglk = myfree(ft_ctx, site_loglk, sizeof(double) * nRateCats * NJ->nPos);
 
@@ -5834,7 +5836,7 @@ double OptMult(double mult, void *data) {
 
 /* Input site_loglk must be for each rate */
 double RescaleGammaLogLk(fasttree_ctx_t *ft_ctx, int nPos, int nRateCats, /*IN*/numeric_t *rates, /*IN*/double *site_loglk,
-			 /*OPTIONAL*/FILE *fpLog) {
+			 /*OPTIONAL*/FILE *fpLog, /*OPTIONAL OUT*/double *gamma_loglk) {
   siteratelk_t s = { /*mult*/1.0, /*alpha*/1.0, nPos, nRateCats, rates, site_loglk, ft_ctx };
   double fx, f2x;
   int i;
@@ -5859,6 +5861,8 @@ double RescaleGammaLogLk(fasttree_ctx_t *ft_ctx, int nPos, int nRateCats, /*IN*/
 
   double *gamma_loglk_sites = mymalloc(ft_ctx, sizeof(double) * nPos);
   double gammaLogLk = GammaLogLk(ft_ctx, &s, /*OUT*/gamma_loglk_sites);
+  if (gamma_loglk != NULL)
+    *gamma_loglk = gammaLogLk;
   if (FT_verbose > 0)
     ft_log(ft_ctx, "Gamma(%d) LogLk = %.3f alpha = %.3f rescaling lengths by %.3f\n",
 	    nRateCats, gammaLogLk, s.alpha, 1/s.mult);
@@ -8511,8 +8515,6 @@ double pnorm(double x)
    That last property is what catches in-flight allocations on longjmp,
    so the API contract for error cleanup still holds. */
 
-#define ARENA_ALIGN 16
-
 /* Helpers that call the custom allocator or fall back to system malloc/free.
    Custom allocators don't get realloc — they go through alloc-new + memcpy + free-old. */
 static void *arena_raw_alloc(ft_arena_t *arena, size_t size) {
@@ -8596,6 +8598,7 @@ void *ft_arena_realloc(ft_arena_t *arena, void *old, size_t new_size) {
     nb = (ft_arena_block_t *)arena->alloc_fn(
         sizeof(ft_arena_block_t) + new_size, arena->alloc_user_data);
     if (nb == NULL) return NULL;
+    assert(((uintptr_t)nb % ARENA_ALIGN) == 0);
     size_t copy = b->size < new_size ? b->size : new_size;
     memcpy(nb->data, b->data, copy);
 #ifdef OPENMP

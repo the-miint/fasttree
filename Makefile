@@ -5,6 +5,9 @@ LDFLAGS = -lm
 # Shared library needs position-independent code
 CFLAGS_PIC = $(CFLAGS) -fPIC
 
+# The wasm32 build takes CFLAGS before OMP=1 adds OpenMP: it has none.
+WASM_CFLAGS := $(CFLAGS)
+
 # Optional OpenMP support: make OMP=1
 ifdef OMP
   CFLAGS     += -DOPENMP -fopenmp
@@ -70,51 +73,87 @@ test_parity: test_parity.c libfasttree.a
 test_threads: test_threads.c libfasttree.a
 	$(CC) $(CFLAGS) -pthread -o $@ $< libfasttree.a $(LDFLAGS)
 
+# --- Tree checks ---
+#
+# The inputs are unpacked from the tarballs, each of which carries its own
+# directory under testdata/.
+TESTDATA = testdata/16S500/.unpacked testdata/BigCOGs/.unpacked
+
+testdata/16S500/.unpacked: 16S_500.tar.gz
+	tar xzf $< -C testdata/
+	touch $@
+
+testdata/BigCOGs/.unpacked: COG_500.tar.gz
+	tar xzf $< -C testdata/
+	touch $@
+#
+# $(call check_trees,<label>,<command>,<input prefix>) runs <command> on the
+# four saved inputs and checks each with check_tree.sh: the command must
+# exit 0 and print the saved reference tree. <input prefix> is "<" for a
+# command that reads the alignment on standard input, empty for one that
+# takes its path as an argument.
+check_trees = st=0; \
+  for f in 16S.1 16S.2; do \
+    sh ./check_tree.sh "$$f ($(1))" testdata/ground_truth/$$f.nwk \
+      "$(2) $(3) testdata/16S500/$$f.p -nt" || st=1; \
+  done; \
+  for f in COG6 COG9; do \
+    sh ./check_tree.sh "$$f ($(1))" testdata/ground_truth/$$f.nwk \
+      "$(2) $(3) testdata/BigCOGs/$$f.500.p" || st=1; \
+  done; \
+  exit $$st
+
+# --- wasm32 (emscripten), run under node ---
+#
+# Objects go to build-wasm/ so they never mix with the native ones. C
+# assert()s stay on (no -DNDEBUG), as in the native build. NODERAWFS lets
+# test_parity read its PHYLIP input from the host filesystem, and
+# EXIT_RUNTIME makes main's return value node's exit status.
+EMCC         ?= emcc
+WASM_DIR      = build-wasm
+WASM_LDFLAGS  = -sALLOW_MEMORY_GROWTH=1 -sNODERAWFS=1 -sEXIT_RUNTIME=1
+WASM_LIB      = $(WASM_DIR)/fasttree_core.o $(WASM_DIR)/fasttree_api.o
+
+$(WASM_DIR)/fasttree_core.o: fasttree_core.c $(HEADERS)
+	@mkdir -p $(WASM_DIR)
+	$(EMCC) $(WASM_CFLAGS) -DFASTTREE_NO_MAIN -c -o $@ $<
+
+$(WASM_DIR)/fasttree_api.o: fasttree_api.c $(HEADERS)
+	@mkdir -p $(WASM_DIR)
+	$(EMCC) $(WASM_CFLAGS) -c -o $@ $<
+
+$(WASM_DIR)/test_api.js: test_api.c $(WASM_LIB)
+	$(EMCC) $(WASM_CFLAGS) -o $@ $< $(WASM_LIB) $(WASM_LDFLAGS)
+
+$(WASM_DIR)/test_parity.js: test_parity.c $(WASM_LIB)
+	$(EMCC) $(WASM_CFLAGS) -o $@ $< $(WASM_LIB) $(WASM_LDFLAGS)
+
+# The API tests, then the library parity tests against the same saved
+# references as `make test`.
+test-wasm: $(WASM_DIR)/test_api.js $(WASM_DIR)/test_parity.js $(TESTDATA)
+	@echo "=== API smoke tests (wasm32, node) ==="
+	@node $(WASM_DIR)/test_api.js
+	@echo "=== Library parity tests (wasm32, node, API vs saved reference) ==="
+	@$(call check_trees,wasm library,node $(WASM_DIR)/test_parity.js,)
+
 # Ground truth tests use FastTree.orig (always non-OMP, when invoked as
 # `make test`) for the saved reference. The library parity tests confirm
 # fasttree_build_soa output is bit-identical on the same inputs.
 # The OMP single-thread parity tests use a dedicated FastTree.omp binary
 # (always built with -DOPENMP) to guarantee the OMP code path is exercised
 # at one thread, regression-guarding the MLQuartetNNI single-thread fix.
-test: FastTree.orig FastTree.omp test_parity test_threads
+test: FastTree.orig FastTree.omp test_parity test_threads $(TESTDATA)
 	@echo "=== Ground truth tests (CLI vs saved reference) ==="
-	@for f in 16S.1 16S.2; do \
-	  ./FastTree.orig -seed 12345 -nt < testdata/16S500/$$f.p 2>/dev/null | \
-	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
-	    echo "PASS: $$f" || echo "FAIL: $$f"; \
-	done
-	@for f in COG6 COG9; do \
-	  ./FastTree.orig -seed 12345 < testdata/BigCOGs/$$f.500.p 2>/dev/null | \
-	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
-	    echo "PASS: $$f" || echo "FAIL: $$f"; \
-	done
+	@$(call check_trees,cli,./FastTree.orig -seed 12345,<)
 	@echo "=== Library parity tests (API vs saved reference) ==="
-	@for f in 16S.1 16S.2; do \
-	  ./test_parity testdata/16S500/$$f.p -nt 2>/dev/null | \
-	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
-	    echo "PASS: $$f (library)" || echo "FAIL: $$f (library)"; \
-	done
-	@for f in COG6 COG9; do \
-	  ./test_parity testdata/BigCOGs/$$f.500.p 2>/dev/null | \
-	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
-	    echo "PASS: $$f (library)" || echo "FAIL: $$f (library)"; \
-	done
+	@$(call check_trees,library,./test_parity,)
 	@echo "=== OMP single-thread parity tests (regression for upstream OPENMP override) ==="
-	@for f in 16S.1 16S.2; do \
-	  OMP_NUM_THREADS=1 ./FastTree.omp -seed 12345 -nt < testdata/16S500/$$f.p 2>/dev/null | \
-	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
-	    echo "PASS: $$f (omp 1 thread)" || echo "FAIL: $$f (omp 1 thread)"; \
-	done
-	@for f in COG6 COG9; do \
-	  OMP_NUM_THREADS=1 ./FastTree.omp -seed 12345 < testdata/BigCOGs/$$f.500.p 2>/dev/null | \
-	    diff - testdata/ground_truth/$$f.nwk > /dev/null && \
-	    echo "PASS: $$f (omp 1 thread)" || echo "FAIL: $$f (omp 1 thread)"; \
-	done
+	@$(call check_trees,omp 1 thread,OMP_NUM_THREADS=1 ./FastTree.omp -seed 12345,<)
 	@echo "=== Thread-safety tests (concurrent contexts vs reference) ==="
 	@./test_threads testdata/16S500/16S.1.p testdata/ground_truth/16S.1.nwk 4 -nt 2>/dev/null \
-	  && echo "PASS: 16S.1 (4 threads)" || echo "FAIL: 16S.1 (4 threads)"
+	  && echo "PASS: 16S.1 (4 threads)" || { echo "FAIL: 16S.1 (4 threads)"; exit 1; }
 	@./test_threads testdata/BigCOGs/COG6.500.p testdata/ground_truth/COG6.nwk 4 2>/dev/null \
-	  && echo "PASS: COG6 (4 threads)" || echo "FAIL: COG6 (4 threads)"
+	  && echo "PASS: COG6 (4 threads)" || { echo "FAIL: COG6 (4 threads)"; exit 1; }
 
 PREFIX ?= /usr/local
 install: libfasttree.a libfasttree.so FastTree fasttree.h
@@ -126,5 +165,6 @@ install: libfasttree.a libfasttree.so FastTree fasttree.h
 
 clean:
 	rm -f *.o *.pic.o libfasttree.a libfasttree.so FastTree FastTree.omp FastTree.orig test_api test_parity test_threads
+	rm -rf $(WASM_DIR) test-out
 
-.PHONY: all clean install test
+.PHONY: all clean install test test-wasm

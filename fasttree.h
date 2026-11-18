@@ -48,8 +48,8 @@ extern "C" {
 
 #define FASTTREE_VERSION_MAJOR  2
 #define FASTTREE_VERSION_MINOR  3
-#define FASTTREE_VERSION_PATCH  0
-#define FASTTREE_VERSION_STRING "2.3.0"
+#define FASTTREE_VERSION_PATCH  1
+#define FASTTREE_VERSION_STRING "2.3.1"
 
 /* ── Error codes ─────────────────────────────────────────────────── */
 
@@ -122,7 +122,10 @@ typedef struct {
 
     /* Support values */
     int  n_bootstrap;                  /* default 1000; SH-like support resamples */
-    int  gamma_log_lk;                 /* nonzero = report gamma likelihood */
+    int  gamma_log_lk;                 /* nonzero = report the gamma likelihood
+                                          and rescale every branch length by
+                                          the fitted gamma factor, when ML NNI
+                                          is on and n_rate_cats > 1 */
 
     /* Reproducibility */
     int64_t seed;                      /* default 314159 */
@@ -181,7 +184,9 @@ typedef struct {
 typedef struct {
     int    n_unique_seqs;    /* sequences after deduplication */
     double log_likelihood;   /* final tree log-likelihood (-1 if ML disabled) */
-    double gamma_log_lk;     /* gamma log-likelihood (-1 if not computed) */
+    double gamma_log_lk;     /* gamma log-likelihood; -1 if not computed:
+                                gamma_log_lk off, ML NNI off, or one rate
+                                category */
     int    n_nni;            /* total ME-NNI topology changes */
     int    n_spr;            /* total SPR topology changes */
     int    n_ml_nni;         /* total ML-NNI topology changes */
