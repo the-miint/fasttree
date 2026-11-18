@@ -547,7 +547,7 @@ static fasttree_tree_soa_t *_extract_tree_soa(fasttree_ctx_t *ft_ctx,
                     &total_children, &name_buf_size);
 
   /* Single allocation for all arrays + backing buffers.
-     Each sub-array starts at a 16-byte offset from the allocation, so it
+     Each sub-array starts at an offset that is a multiple of 16, so it
      has the allocation's alignment (malloc's), enough for doubles and
      pointers. */
 #define SOA_ALIGN(x) (((x) + 15) & ~(size_t)15)

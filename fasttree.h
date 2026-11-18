@@ -124,7 +124,8 @@ typedef struct {
     int  n_bootstrap;                  /* default 1000; SH-like support resamples */
     int  gamma_log_lk;                 /* nonzero = report the gamma likelihood
                                           and rescale every branch length by
-                                          the fitted gamma factor */
+                                          the fitted gamma factor, when ML NNI
+                                          is on and n_rate_cats > 1 */
 
     /* Reproducibility */
     int64_t seed;                      /* default 314159 */

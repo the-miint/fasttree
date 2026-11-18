@@ -304,8 +304,8 @@ typedef struct {
  * ARENA_ALIGN. The single-precision SSE code loads 16-byte vectors from
  * them. Every other build stores only scalars, pointers and structs of
  * them, which need no more than malloc's alignment, the target's
- * _Alignof(max_align_t): 16 on x86_64, 8 on wasm32. A custom alloc_fn
- * returns 16-byte-aligned blocks (fasttree.h), enough for both.
+ * _Alignof(max_align_t): 16 on x86_64, 8 under emscripten. A custom
+ * alloc_fn returns 16-byte-aligned blocks (fasttree.h), enough for both.
  */
 #ifdef USE_SSE3
 #define ARENA_ALIGN 16
