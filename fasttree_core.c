@@ -300,7 +300,7 @@
 #endif
 #endif
 
-#define FT_VERSION "2.2.0"
+#define FT_VERSION FASTTREE_VERSION_STRING
 
 char *usage =
   "  FastTree protein_alignment > tree\n"

@@ -48,8 +48,8 @@ extern "C" {
 
 #define FASTTREE_VERSION_MAJOR  2
 #define FASTTREE_VERSION_MINOR  3
-#define FASTTREE_VERSION_PATCH  0
-#define FASTTREE_VERSION_STRING "2.3.0"
+#define FASTTREE_VERSION_PATCH  1
+#define FASTTREE_VERSION_STRING "2.3.1"
 
 /* ── Error codes ─────────────────────────────────────────────────── */
 
